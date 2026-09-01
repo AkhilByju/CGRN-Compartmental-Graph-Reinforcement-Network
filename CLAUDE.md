@@ -53,13 +53,14 @@ is true:
   `docs/research_thesis.md` §"Isolation of variables".
 - Fill in `src/models/architecture_v0/*.py` with real logic beyond what the
   user has explicitly specified in `docs/architecture_v0.md`. As of this
-  writing, only CellV0's *state* is specified — `cell.py`'s `BeliefCell`
-  `(mu, evidence, uncertainty)`. The belief-aggregation operator
-  (`integration.py`), and everything downstream of it (`cluster.py`,
-  `graph.py`, `dynamics.py`, `encoder.py`, `decoder.py`, `model.py`), must
-  stay `NotImplementedError` stubs until the user finalizes them — check
-  `docs/architecture_v0.md`'s per-section status before assuming something
-  is decided.
+  writing: CellV0's *state* is specified (`cell.py`'s `BeliefCell`) and its
+  *aggregation operator* has three implemented, unchosen candidates
+  (`integration.py`'s `BeliefLayer`) pending Experiment 002/003. Do not add
+  a fourth aggregation method or pick a "winner" without that experiment.
+  Everything downstream (`cluster.py`, `graph.py`, `dynamics.py`,
+  `encoder.py`, `decoder.py`, `model.py`) must stay `NotImplementedError`
+  stubs until the user finalizes them — check `docs/architecture_v0.md`'s
+  per-section status before assuming something is decided.
 - Fully implement the baseline models in `src/models/baselines/` beyond
   placeholders — that's Experiment 001, which starts only once the user says
   to begin it.

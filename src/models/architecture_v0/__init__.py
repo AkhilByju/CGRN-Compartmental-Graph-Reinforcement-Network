@@ -1,13 +1,18 @@
 """ArchitectureV0 (working name CGRN) -- MOSTLY UNIMPLEMENTED BY DESIGN.
 
-CellV0's state representation is now decided and implemented: `cell.py`
-defines `BeliefCell`, the belief-state primitive `(mu, evidence,
-uncertainty)` that replaces an ordinary neuron's scalar activation (see
-docs/architecture_v0.md Sec 1 and docs/research_log.md).
+CellV0's state representation is decided and implemented: `cell.py` defines
+`BeliefCell`, the belief-state primitive `(mu, evidence, uncertainty)` that
+replaces an ordinary neuron's scalar activation.
 
-Every other module in this package still raises `NotImplementedError`. In
-particular, how a layer combines N incoming `BeliefCell`s into one outgoing
-`BeliefCell` -- the belief-aggregation operator that will live in
-`integration.py` and become `BeliefLayer` -- is still being decided. Do not
-implement it speculatively; see CLAUDE.md Sec 2.
+CellV0's aggregation operator has three competing candidate
+implementations, not a final choice: `integration.py` defines
+`BeliefLayer(aggregation=...)` for `"reliability"`, `"support_conflict"`,
+and `"precision"`. Which (if any) is adopted is an empirical question for
+Experiment 002/003 (docs/experiment_protocol.md) -- do not treat any one of
+them as settled.
+
+Every other module in this package (`cluster.py`, `graph.py`,
+`dynamics.py`, `encoder.py`, `decoder.py`, `model.py`) still raises
+`NotImplementedError` and remains unspecified. See docs/architecture_v0.md
+and CLAUDE.md Sec 2 before implementing any of them.
 """

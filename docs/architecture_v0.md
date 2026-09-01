@@ -2,18 +2,23 @@
 
 **Status: PARTIALLY SPECIFIED.** CellV0's *state* (§1) is decided and
 implemented (`src/models/architecture_v0/cell.py`). Its *aggregation
-operator* — how a cell combines incoming state into its own — is still
-open, along with everything in §2 onward. No code beyond `cell.py` should
-be implemented past a stub until the sections marked `OPEN` below are
-resolved by the user and this document is updated.
+operator* — how a cell combines incoming state into its own — now has
+**three implemented candidates, not a final choice**
+(`src/models/architecture_v0/integration.py`'s `BeliefLayer`). Everything
+in §2 onward is still open. No code beyond `cell.py` and `integration.py`
+should be implemented past a stub until the sections marked `OPEN` below
+are resolved by the user and this document is updated.
 
-The next concrete research task (not a coding task) is to finalize the
-belief-aggregation operator described in §1 — see `docs/research_log.md`
-for the candidate formulas currently under consideration.
+The next concrete research task is **Experiment 002** — running the three
+`BeliefLayer` aggregation methods against each other and a parameter-matched
+plain-MLP baseline (`docs/experiment_protocol.md`) to see whether any of
+them, or none, is worth carrying forward. This is an experimentation task,
+not a further design task — do not add a fourth candidate or otherwise
+keep redesigning §1 before that comparison runs.
 
 ## 1. CellV0 — the basic computational unit
 
-**State: SPECIFIED. Aggregation: OPEN.**
+**State: SPECIFIED. Aggregation: THREE CANDIDATES IMPLEMENTED, none chosen.**
 
 CellV0 replaces the ordinary artificial neuron's single scalar activation
 
@@ -55,26 +60,50 @@ decided design — a `BeliefCell` holds one `(mu, u, e)` state, not several
 sub-states — see `src/models/architecture_v0/compartment.py`, kept only as
 a stub in case a later, richer cell revisits the idea.
 
-### What's still open: the belief-aggregation operator (the `???` above)
+### The belief-aggregation operator: three implemented candidates
 
 The `BeliefCell` state is settled; **how a cell combines N incoming
-`BeliefCell`s (each reaching it through a learned weight `w_ij`) into its
-own outgoing `BeliefCell` is not.** This is the actual remaining content of
-"CellV0's math" — state shape, dtype, and what's dormant are now fixed.
+`BeliefCell`s (each reaching it through a learned connection) into its own
+outgoing `BeliefCell` has three implemented candidates, and no choice among
+them has been made.** `BeliefLayer` (`src/models/architecture_v0/integration.py`)
+implements all three behind one interface — `BeliefLayer(in_cells,
+out_cells, aggregation=...)` — so that comparing them is a controlled
+experiment over the aggregation rule alone, everything else held fixed.
 
-Candidate direction under consideration (recorded so it isn't lost —
-**not frozen**, do not implement until confirmed): each incoming cell
-contributes a proposed content `m_ij = w_ij * mu_j` and a support weight
-`s_ij` that grows with the sender's evidence and shrinks with its
-uncertainty (e.g. `s_ij = |w_ij| * e_j / (u_j + eps)`); the receiving
-cell's content is an evidence-weighted combination of the `m_ij` (plus
-bias, plus nonlinearity); its evidence accumulates total incoming support;
-and its uncertainty is derived from evidence and
-agreement/disagreement among incoming messages rather than learned as an
-arbitrary extra output. See `docs/research_log.md` for the specific
-formulas under consideration and why. **Implementation belongs in
-`src/models/architecture_v0/integration.py` and is blocked until a
-formulation is confirmed.**
+All three share the same learned-connection structure: a content weight
+`w_ij` (how cell `j`'s content affects cell `i`) producing a message
+`m_ij = w_ij * mu_j`, and a relevance gate `g_ij = sigmoid(a_ij)` (how
+relevant cell `j` is to cell `i`).
+
+- **`"reliability"`** — reliability-weighted consensus. Reliability
+  `r_ij = g_ij * e_j / (1 + u_j)` sets each sender's influence; content is
+  the reliability-weighted average of incoming messages; evidence is total
+  reliability; uncertainty grows with both weighted disagreement among
+  senders and a lack of total evidence.
+- **`"support_conflict"`** — explicit positive vs. negative support.
+  Bounds each message to `[-1, 1]` (`q_ij = tanh(m_ij)`) and separately
+  sums reliability-weighted positive and negative support (`P_i`, `N_i`);
+  content is net support `(P_i - N_i) / (P_i + N_i)`; evidence is total
+  support `P_i + N_i`; uncertainty grows with explicit conflict
+  `2*min(P_i,N_i)/(P_i+N_i)` and with a lack of evidence.
+- **`"precision"`** — probabilistic precision fusion. Precision
+  `pi_ij = g_ij * e_j / (u_j^2 + eps)` (uncertainty penalized quadratically,
+  more harshly than the other two methods) sets each sender's influence;
+  content is the precision-weighted average; evidence sums `g_ij * e_j`;
+  uncertainty combines a precision-derived base term with weighted
+  disagreement.
+
+All three guarantee `mu_i = f(mu_j, e_j, u_j)` for every incoming cell, so
+gradients from the eventual loss reach not just incoming content but
+incoming evidence and uncertainty too — evidence/uncertainty are not merely
+reported, they influence what the network predicts (verified in
+`tests/test_belief_layer.py`).
+
+Exact formulas, worked examples, and the reasoning behind each are recorded
+in `docs/research_log.md` ("CellV0 aggregation candidates"). **None of the
+three is chosen** — see Experiment 002/003 in `docs/experiment_protocol.md`
+for the comparison that decides whether any of them, over a plain MLP unit,
+is worth keeping.
 
 ### Why belief cells might matter (hypothesis, not a claim)
 
@@ -93,13 +122,18 @@ determined, not assumed** — see Experiment 002/003 in
 ### Test the cell before the graph
 
 Before any graph complexity, compare parameter-matched variants: a
-conventional MLP-like unit (plain scalar activation) vs. a `BeliefCell`
-layer using whichever aggregation operator is confirmed. Once that operator
-exists, natural ablation axes include: evidence-weighting on/off,
-uncertainty derived from evidence alone vs. evidence+disagreement, and
-uncertainty used vs. ignored by downstream cells. Does carrying
-evidence/uncertainty help, and for which function classes? Does it just
-increase compute? (Experiment 002/003.)
+conventional MLP-like unit (plain scalar activation) vs. a `BeliefLayer`
+network run with each of `"reliability"`, `"support_conflict"`, and
+`"precision"`. Input belief initialization for this comparison is decided
+too: for a directly observed raw feature `x_j`, start with
+`mu_j = x_j, e_j = 1, u_j = 1` (`BeliefCell.from_observed_features`) so
+every feature begins equally uncertain and any useful evidence/uncertainty
+structure has to be learned, not hand-given. Natural ablation axes once the
+initial comparison is in: evidence-weighting on/off, uncertainty derived
+from evidence alone vs. evidence+disagreement, and uncertainty used vs.
+ignored by downstream cells. Does carrying evidence/uncertainty help, for
+which method, and for which function classes? Does it just increase
+compute? (Experiment 002/003.)
 
 ## 2. Layers → persistent computational substrate [OPEN, dependent on §1]
 
@@ -202,25 +236,32 @@ architectural commitment.
 
 ## 7. What Architecture Specification V0.1 must still define
 
-Before `integration.py` is implemented, a revision of this file must
-specify, precisely enough to implement, the remaining open items:
-
 1. ~~Cell state — shape, dtype, initialization.~~ **SPECIFIED** — see §1
    (`BeliefCell`: `mu`, `evidence`, `uncertainty`; `tau` dormant until V0.1).
-2. Aggregation inputs — exactly what enters the belief-aggregation
-   operator (which neighboring `BeliefCell`s, which connection parameters,
-   whether a bias/nonlinearity is part of the operator). [OPEN]
-3. Aggregation computation — the exact function producing the outgoing
-   `(mu_i, evidence_i, uncertainty_i)` from incoming `BeliefCell`s. [OPEN]
-4. Aggregation parameterization — per-edge weights `w_ij` as in an
-   ordinary layer, or something richer? [OPEN]
+2. ~~Aggregation inputs — exactly what enters the belief-aggregation
+   operator.~~ **SPECIFIED (x3)** — all three `BeliefLayer` methods take the
+   same inputs: incoming `BeliefCell`s, a per-edge content weight `w_ij`, a
+   per-edge relevance gate `g_ij`, and a per-output-cell bias. See §1.
+3. ~~Aggregation computation.~~ **THREE CANDIDATES IMPLEMENTED, none
+   chosen** — `"reliability"`, `"support_conflict"`, `"precision"` in
+   `integration.py`. Experiment 002/003 selects among them (or none).
+4. ~~Aggregation parameterization.~~ **SPECIFIED** — per-edge weights
+   `w_ij` and `g_ij` (an ordinary dense layer's worth of parameters,
+   duplicated for the gate), same for all three methods.
 5. Output/message representation — what a cell sends downstream (its full
-   `BeliefCell`, or a derived subset?). [OPEN]
-6. Parameter count — closed-form or computed formula per cell/layer. [OPEN]
-7. Computational complexity — FLOPs per cell per layer. [OPEN]
-8. Limiting cases — can the aggregation operator reduce to an ordinary
+   `BeliefCell`, or a derived subset?). **SPECIFIED for V0.0**: the full
+   `BeliefCell`, unchanged, per the implemented `BeliefLayer.forward`.
+6. ~~Parameter count.~~ **SPECIFIED** — `out_cells * (2 * in_cells + 1)`
+   per `BeliefLayer` (content weight + relevance logit + bias), identical
+   across all three methods, so parameter-matching a baseline is direct.
+7. Computational complexity — FLOPs per cell per layer. Same asymptotic
+   order as a `Linear` layer (`O(in_cells * out_cells)`), with a small
+   constant-factor overhead per method; exact profiling is part of
+   Experiment 002/003, not yet measured. [OPEN]
+8. Limiting cases — can any aggregation method reduce to an ordinary
    weighted-sum-plus-activation (recovering a plain MLP neuron) under some
-   setting? Makes ablations tractable — see Experiment 003. [OPEN]
+   setting? Not yet checked for any of the three. Makes ablations
+   tractable — see Experiment 003. [OPEN]
 9. Expected advantages (hypotheses to test — draft in §1 above). [OPEN]
 10. Expected failure modes (hypotheses to test). [OPEN]
 11. Persistence (`tau`) reintroduction rule for V0.1's recurrence — deferred,
@@ -253,3 +294,10 @@ rejected idea — it is deferred to preserve experimental interpretability
   `src/models/architecture_v0/cell.py`. The belief-aggregation operator
   (how N incoming `BeliefCell`s combine into one) remains open — see
   `docs/research_log.md` for the candidate formulas under consideration.
+- Belief-aggregation operator: three candidates implemented (not chosen).
+  `BeliefLayer` (`src/models/architecture_v0/integration.py`) implements
+  `"reliability"`, `"support_conflict"`, and `"precision"` behind one
+  switchable interface, plus `BeliefCell.from_observed_features` for
+  initializing beliefs from raw input features. Experiment 002/003 will
+  compare them against each other and a plain-MLP baseline before any one
+  is adopted.

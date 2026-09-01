@@ -13,12 +13,14 @@ tau)` state but stays dormant until V0.1 introduces recurrence -- a
 feedforward V0.0 cell fires once, so there is nothing yet for persistence
 to persist across.
 
-This module defines ONLY the belief-state container: its fields,
-shape/dtype/value invariants, and basic tensor-like ergonomics (`.to`,
-`.detach`). It does NOT define how a layer combines N incoming BeliefCells
-into one outgoing BeliefCell -- the belief-aggregation operator that will
-become `BeliefLayer` (see `integration.py`). That computation is still
-being decided; do not implement it here or infer it from this file.
+This module defines the belief-state container: its fields,
+shape/dtype/value invariants, basic tensor-like ergonomics (`.to`,
+`.detach`), and how a raw observed feature becomes an initial belief
+(`from_observed_features`). It does NOT define how a layer combines N
+incoming BeliefCells into one outgoing BeliefCell -- the belief-aggregation
+operator lives in `integration.py`'s `BeliefLayer`, which currently
+implements three competing candidate formulas pending an empirical
+comparison (docs/research_log.md, docs/architecture_v0.md Sec 1).
 """
 
 from __future__ import annotations
@@ -89,3 +91,18 @@ class BeliefCell:
             evidence=self.evidence.detach(),
             uncertainty=self.uncertainty.detach(),
         )
+
+    @classmethod
+    def from_observed_features(cls, x: torch.Tensor) -> BeliefCell:
+        """Initial belief for directly observed raw features: `mu = x`,
+        `evidence = 1`, `uncertainty = 1` for every feature (docs/research_log.md
+        "Input belief initialization"). Evidence and uncertainty start
+        equal for every feature so that any useful evidence/uncertainty
+        structure has to be learned by the network, not hand-given.
+
+        This is deliberately narrow -- appropriate for the first
+        experiments over directly observed feature vectors (Experiment
+        002/006), not a general encoder for arbitrary observations or
+        language (see `encoder.py`, still unspecified).
+        """
+        return cls(mu=x, evidence=torch.ones_like(x), uncertainty=torch.ones_like(x))

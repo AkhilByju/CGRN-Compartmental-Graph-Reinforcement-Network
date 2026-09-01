@@ -81,3 +81,11 @@ def test_batched_layer_shape() -> None:
         uncertainty=torch.rand(batch, num_cells),
     )
     assert cell.shape == (batch, num_cells)
+
+
+def test_from_observed_features_sets_unit_evidence_and_uncertainty() -> None:
+    x = torch.tensor([1.0, -2.0, 0.5])
+    cell = BeliefCell.from_observed_features(x)
+    assert torch.equal(cell.mu, x)
+    assert torch.equal(cell.evidence, torch.ones_like(x))
+    assert torch.equal(cell.uncertainty, torch.ones_like(x))
