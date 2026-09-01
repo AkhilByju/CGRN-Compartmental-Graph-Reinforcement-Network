@@ -1,21 +1,69 @@
-"""MLP baseline -- PLACEHOLDER, not yet implemented.
-
-Implementation begins with Experiment 001 (docs/experiment_protocol.md).
-Intended interface: a standard `torch.nn.Module` MLP with a configurable
-number of layers and hidden width, used as a Track A/B/C baseline and as
-the parameter-matched comparison point for CellV0 (Q1/Q3 in
-docs/hypotheses.md).
+"""MLP baseline: a conventional feed-forward network used as the
+parameter-/compute-matched comparison point for CellV0 (Q1/Q3 in
+docs/hypotheses.md), starting with Experiment 002/003.
 """
 
 from __future__ import annotations
 
 import torch
+from torch import nn
 
 
-class MLPBaseline(torch.nn.Module):
-    def __init__(self, *args, **kwargs) -> None:
+class MLPBaseline(nn.Module):
+    """`in_features -> [Linear -> activation] * num_hidden_layers ->
+    Linear(out_features)`, with no activation on the final layer (so
+    regression outputs are unbounded, unlike `BeliefLayer`'s internal
+    `tanh`)."""
+
+    def __init__(
+        self,
+        in_features: int,
+        hidden_dim: int,
+        out_features: int,
+        num_hidden_layers: int = 2,
+        activation: type[nn.Module] = nn.Tanh,
+    ) -> None:
         super().__init__()
-        raise NotImplementedError(
-            "MLPBaseline is a placeholder. Implement as part of Experiment 001 "
-            "(docs/experiment_protocol.md)."
+        if num_hidden_layers < 1:
+            raise ValueError("num_hidden_layers must be at least 1.")
+
+        dims = [in_features] + [hidden_dim] * num_hidden_layers
+        layers: list[nn.Module] = []
+        for a, b in zip(dims[:-1], dims[1:]):
+            layers += [nn.Linear(a, b), activation()]
+        layers.append(nn.Linear(dims[-1], out_features))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+def param_count_for_mlp(
+    in_features: int, hidden_dim: int, out_features: int, num_hidden_layers: int = 2
+) -> int:
+    """Closed-form parameter count, used to search for a `hidden_dim` that
+    approximately matches another architecture's parameter count."""
+    dims = [in_features] + [hidden_dim] * num_hidden_layers + [out_features]
+    return sum(a * b + b for a, b in zip(dims[:-1], dims[1:]))
+
+
+def match_hidden_dim(
+    target_params: int,
+    in_features: int,
+    out_features: int,
+    num_hidden_layers: int = 2,
+    search_range: range = range(1, 2048),
+) -> int:
+    """Returns the `hidden_dim` (within `search_range`) whose `MLPBaseline`
+    parameter count is closest to `target_params`, for an approximately
+    parameter-matched baseline."""
+    best_dim = search_range[0]
+    best_diff: int | None = None
+    for dim in search_range:
+        diff = abs(
+            param_count_for_mlp(in_features, dim, out_features, num_hidden_layers) - target_params
         )
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best_dim = dim
+    return best_dim

@@ -11,6 +11,11 @@ and `"precision"`. Which (if any) is adopted is an empirical question for
 Experiment 002/003 (docs/experiment_protocol.md) -- do not treat any one of
 them as settled.
 
+`belief_network.py` implements `BeliefNetwork`, a minimal two-`BeliefLayer`
+feedforward stack used ONLY by Experiment 002/003 to test CellV0 in
+isolation -- it is NOT `ArchitectureV0` and does not imply `model.py` is
+unblocked.
+
 Every other module in this package (`cluster.py`, `graph.py`,
 `dynamics.py`, `encoder.py`, `decoder.py`, `model.py`) still raises
 `NotImplementedError` and remains unspecified. See docs/architecture_v0.md

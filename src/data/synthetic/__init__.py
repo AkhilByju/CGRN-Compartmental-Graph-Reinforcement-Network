@@ -1,4 +1,5 @@
-"""Shared synthetic-data generation utilities for Level 0 sanity checks:
-linear/nonlinear functions, XOR, toy regression/classification
-(docs/benchmark_plan.md "Benchmark ladder" Level 0). Not yet implemented --
-begins with Experiment 001."""
+"""Synthetic data generators. `regression.py` and `classification.py`
+implement the R0-R2 / C0-C2 progressions (docs/benchmark_plan.md "Synthetic
+regression and classification progressions") used by Experiment 002/003
+(docs/experiment_protocol.md). `utils.py` holds shared splitting/
+standardization helpers."""
