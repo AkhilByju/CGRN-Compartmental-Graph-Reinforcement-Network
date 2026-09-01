@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cgrn"
+version = "0.0.1"
+description = "CGRN (working name) -- research scaffold for a compartmental, graph-based, iterative-refinement neural architecture. Currently in the design/specification phase; see docs/architecture_v0.md."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Akhil Byju" }]
+
+dependencies = [
+    "torch>=2.2",
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "scikit-learn>=1.4",
+    "pandas>=2.2",
+    "matplotlib>=3.8",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+# Kept separate: only needed once Experiment 006 (classical ML baselines) begins.
+classical-ml = [
+    "xgboost>=2.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
