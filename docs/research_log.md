@@ -212,3 +212,112 @@ three plus an MLP baseline on parameter-matched, otherwise-identical
 networks (`docs/architecture_v0.md` §1 "Test the cell before the graph") --
 this has not been done yet; nothing here should be read as "Method X
 performed better."
+
+## 2026-09-01 — Experiment 002 initial results: mixed-to-negative
+
+**Context:** Ran the comparison Experiment 002 was designed for: an MLP
+baseline vs. `BeliefNetwork` under each of the three aggregation methods,
+on R0/R1/R2 (regression) and C0/C1/C2 (classification), 3 seeds each,
+~parameter-matched (570-720 params depending on dataset), 2000 steps,
+hidden_cells=16. Full setup in `experiments/002_cell_v0/README.md`; raw
+per-run JSON in `results/raw/` (gitignored, regenerate with
+`python experiments/002_cell_v0/run_all.py --seeds 0 1 2 --steps 2000`).
+
+**Finding 1 — predictive performance: no consistent advantage.**
+
+```text
+                 mlp      reliability   support_conflict   precision
+R0 linear        0.9927   0.9924        0.9918             0.9925    (R^2)
+R1 nonlinear     0.9241   0.9267        0.9182 (+/-0.007)  0.9267    (R^2)
+R2 interaction   0.9691   0.9617        0.9051 (+/-0.014)  0.9686    (R^2)
+C0 linear        0.9433   0.9411        0.9422             0.9411    (accuracy)
+C1 XOR           0.8978   0.9000        0.8911             0.8989    (accuracy)
+C2 interaction   0.9389   0.9356        0.9289             0.9500    (accuracy)
+```
+
+`reliability` and `precision` track the MLP baseline closely everywhere
+(within ~1%, i.e. noise at 3 seeds). `support_conflict` is the one
+consistent standout, and it's a negative one: clearly worse on R2
+(0.905 vs. 0.969, and the highest variance of any cell, +/-0.014) and
+mildly worse elsewhere. No method showed the hoped-for edge on the
+interaction-heavy tasks (R2, C2) over a parameter-matched MLP -- the
+motivating question in `docs/architecture_v0.md` §1 ("does carrying
+evidence/uncertainty help, for which method, and for which function
+classes?") gets a "not yet demonstrated" answer at this scale.
+
+**Finding 2 — uncertainty calibration: direction flips with task
+difficulty, and is not seed noise.** The "ambiguous vs. clear" test
+(mean uncertainty on near-decision-boundary points minus mean uncertainty
+on far-from-boundary points; positive = intended behavior) gave, with
+signs consistent across all 3 seeds individually (not just in the mean):
+
+```text
+                 reliability          precision            support_conflict
+C0 linear        +0.056 (3/3 +)       +0.130 (3/3 +)       +3.03 (3/3 +, huge)
+C1 XOR           -0.146 (3/3 -)       -0.194 (3/3 -)       +3.04 (3/3 +, huge)
+C2 interaction   -0.046 (3/3 -)       -0.048 (3/3 -)       +0.88 (3/3 +, huge)
+```
+
+`reliability` and `precision` show the intended direction (ambiguous >
+clear uncertainty) *only* on the easiest, linearly separable task, and
+consistently invert on the two harder, nonlinear tasks. That is close to
+the opposite of what would make evidence/uncertainty useful -- if
+anything, uncertainty is least trustworthy exactly where it would matter
+most (XOR, interaction).
+
+**Finding 3 — `support_conflict` shows evidence collapse.** Its `evidence`
+values (`P_i + N_i`) were ~0.02-0.1 across every dataset, roughly 10-500x
+smaller than `reliability`'s (~0.5-1.5) or `precision`'s (~3-11) evidence
+on the same data, while its `uncertainty` was correspondingly 4-16 (vs.
+0.3-1.6 for the other two) -- an order of magnitude larger and far noisier
+across seeds. Its "correct-direction" ambiguous/clear gaps above are not
+evidence it calibrates well; they're a symptom of `1/sqrt(evidence + eps)`
+dominating `uncertainty` when evidence is near-collapsed, which explains
+both the huge magnitudes and the huge per-seed variance (e.g. C1 XOR:
+2.02, 3.28, 3.82 across seeds -- a large spread even though the sign is
+stable).
+
+**Why (mechanistic hypothesis, not yet verified further):** nothing in the
+training loss directly supervises `evidence` or `uncertainty` -- only
+`mu` (via the readout layer) reaches the loss. Evidence/uncertainty do
+receive gradient (confirmed in `tests/test_belief_layer.py`), but only
+*instrumentally*, insofar as they shape `mu` through `alpha`/`precision`
+weighting. There is no term in the loss rewarding "uncertainty should be
+higher on ambiguous inputs" -- so a configuration where the optimizer sets
+evidence/uncertainty however is most convenient for fitting `mu`, with no
+resemblance to genuine epistemic uncertainty, is not just possible but
+arguably the default outcome. That would explain both the direction-flip
+(nothing forces a consistent relationship between margin and uncertainty)
+and `support_conflict`'s evidence collapse (nothing forces evidence to stay
+away from a degenerate near-zero solution). This has not been tested
+further -- e.g. by adding an explicit calibration term to the loss and
+seeing whether the flip disappears -- so it remains a hypothesis, not a
+conclusion.
+
+**Relation to `docs/hypotheses.md`:** this is a mixed-to-negative result in
+the sense §2 of `research_thesis.md` explicitly asks for: performance is
+roughly neutral (not a clean loss, not a clean win), but the specific
+*qualitative* property motivating the whole design (H1: structured
+evidence/uncertainty should provide a useful representational bias) is not
+supported at this scale -- and the failure has a plausible, checkable
+mechanism (evidence/uncertainty are unsupervised side-channels), which is
+exactly the kind of "rigorously analyzed failure" `docs/hypotheses.md`
+"What would constitute a useful negative result" calls for.
+
+**Follow-up (not yet done, listed as candidates, not started):**
+- Experiment 003 (cell ablations) could isolate whether the direction-flip
+  is intrinsic to these formulas or an artifact of this scale/hidden width
+  -- e.g. sweep `hidden_cells`, steps, and learning rate before drawing a
+  final conclusion.
+- Test the "unsupervised side-channel" hypothesis directly: add an
+  explicit calibration signal (e.g. penalize low uncertainty on
+  known-ambiguous training examples) as a deliberate, isolated change and
+  see whether calibration improves -- this would itself be a new,
+  documented variable, not folded into "the" aggregation formula.
+- Investigate `support_conflict`'s evidence collapse specifically (e.g.
+  does it correlate with `relevance_logit` being driven very negative?)
+  before deciding whether it's a fixable initialization/scaling issue or
+  a structural problem with the method.
+- None of this yet justifies dropping any of the three methods, or
+  concluding CellV0 "doesn't work" -- see `docs/research_thesis.md` §2 on
+  not over-concluding from a first pass at one scale.

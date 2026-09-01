@@ -103,7 +103,12 @@ Exact formulas, worked examples, and the reasoning behind each are recorded
 in `docs/research_log.md` ("CellV0 aggregation candidates"). **None of the
 three is chosen** — see Experiment 002/003 in `docs/experiment_protocol.md`
 for the comparison that decides whether any of them, over a plain MLP unit,
-is worth keeping.
+is worth keeping. Initial Experiment 002 results (`docs/research_log.md`,
+"Experiment 002 initial results") are mixed-to-negative: no consistent
+performance advantage over a parameter-matched MLP, and the intended
+"uncertainty rises on ambiguous inputs" behavior only appears on the
+easiest task and inverts on harder ones — not yet a final verdict, but a
+reason to treat all three as still unproven, not to prefer one.
 
 ### Why belief cells might matter (hypothesis, not a claim)
 
