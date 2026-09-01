@@ -1,74 +1,105 @@
 # Architecture V0 — Design Space and Open Questions
 
-**Status: UNSPECIFIED. This document frames the design space; it is not a
-finalized specification.** No code in `src/models/architecture_v0/` should
-be implemented beyond stubs until the sections marked `OPEN` below are
-resolved by the user and this document is updated to `SPECIFIED`.
+**Status: PARTIALLY SPECIFIED.** CellV0's *state* (§1) is decided and
+implemented (`src/models/architecture_v0/cell.py`). Its *aggregation
+operator* — how a cell combines incoming state into its own — is still
+open, along with everything in §2 onward. No code beyond `cell.py` should
+be implemented past a stub until the sections marked `OPEN` below are
+resolved by the user and this document is updated.
 
-The next concrete research task (not a coding task) is **Architecture
-Specification V0.1**: a mathematical definition of `CellV0` alone. See §7
-for exactly what that spec must contain.
+The next concrete research task (not a coding task) is to finalize the
+belief-aggregation operator described in §1 — see `docs/research_log.md`
+for the candidate formulas currently under consideration.
 
-## 1. CellV0 — the basic computational unit [OPEN]
+## 1. CellV0 — the basic computational unit
 
-Not intended to literally simulate a biological neuron. Inspired by the idea
-that biological neurons contain multiple computational compartments
-(dendritic branches), a conventional artificial unit approximately performs:
+**State: SPECIFIED. Aggregation: OPEN.**
 
-```text
-input -> weighted transformation -> nonlinearity -> output
-```
-
-`CellV0` should instead conceptually resemble:
+CellV0 replaces the ordinary artificial neuron's single scalar activation
 
 ```text
-                incoming information
-          /          |          \
-     Compartment A
-     Compartment B
-     Compartment C
-     Compartment D
-          \          |          /
-                integration
-                     |
-              central cell state
-              /              \
-      outgoing message    persistent state
+a_i = phi(sum_j w_ij * a_j + b_i)
 ```
 
-Sketch of the (not-yet-finalized) recurrence, using cell `i`, compartment
-`b`, time/iteration `t`:
+with a structured **belief state** carried by a `BeliefCell`
+(`src/models/architecture_v0/cell.py`):
 
-- Persistent state: `h_i(t)`
-- Compartments: `D_i1, D_i2, ..., D_iB`
-- A generic compartment: `d_i,b(t) = f_b(local input, current cell state,
-  incoming messages, possibly compartment state)`
-- Integration: `u_i(t) = S(d_i,1, d_i,2, ..., d_i,B)`
-- State update: `h_i(t+1) = Update(h_i(t), u_i(t))`
+```text
+B_i = (mu_i, u_i, e_i)
 
-**None of `f_b`, `S`, or `Update` are chosen yet.** Choosing them is the
-Architecture Specification V0.1 task.
+mu_i in R    -- content: what the cell currently believes
+e_i  in R+   -- evidence: how much supporting information produced it
+u_i  in R+   -- uncertainty: how (un)confident the cell is in mu_i
+```
 
-### Why richer cells might matter (hypothesis, not a claim)
+Everywhere an ordinary network would put one neuron, CellV0 puts one
+`BeliefCell`. Information flows as structured belief states rather than
+bare scalar activations:
+
+```text
+Ordinary neuron                     CellV0 (Belief Cell)
+
+x1 --w1--\                          B1=(mu1,u1,e1) --w1--\
+x2 --w2--+-sum-phi->a_i             B2=(mu2,u2,e2) --w2--+-???->B_i=(mu_i,u_i,e_i)
+x3 --w3--/                          B3=(mu3,u3,e3) --w3--/
+```
+
+`tau_i` (persistence, `tau in [0,1]`) is part of the eventual
+`(mu, u, e, tau)` state but is deliberately **not** a `BeliefCell` field in
+V0.0: a feedforward cell fires once, so there's nothing yet for persistence
+to persist across. It is reintroduced when V0.1 adds recurrence (§2).
+
+Earlier drafts of this document described CellV0 in terms of multiple
+intra-cell "compartments" (`D_i1..D_iB`). That is **not** part of the
+decided design — a `BeliefCell` holds one `(mu, u, e)` state, not several
+sub-states — see `src/models/architecture_v0/compartment.py`, kept only as
+a stub in case a later, richer cell revisits the idea.
+
+### What's still open: the belief-aggregation operator (the `???` above)
+
+The `BeliefCell` state is settled; **how a cell combines N incoming
+`BeliefCell`s (each reaching it through a learned weight `w_ij`) into its
+own outgoing `BeliefCell` is not.** This is the actual remaining content of
+"CellV0's math" — state shape, dtype, and what's dormant are now fixed.
+
+Candidate direction under consideration (recorded so it isn't lost —
+**not frozen**, do not implement until confirmed): each incoming cell
+contributes a proposed content `m_ij = w_ij * mu_j` and a support weight
+`s_ij` that grows with the sender's evidence and shrinks with its
+uncertainty (e.g. `s_ij = |w_ij| * e_j / (u_j + eps)`); the receiving
+cell's content is an evidence-weighted combination of the `m_ij` (plus
+bias, plus nonlinearity); its evidence accumulates total incoming support;
+and its uncertainty is derived from evidence and
+agreement/disagreement among incoming messages rather than learned as an
+arbitrary extra output. See `docs/research_log.md` for the specific
+formulas under consideration and why. **Implementation belongs in
+`src/models/architecture_v0/integration.py` and is blocked until a
+formulation is confirmed.**
+
+### Why belief cells might matter (hypothesis, not a claim)
 
 Not simply "more computation per unit is better" — that isn't guaranteed.
-The hypothesis is that structured internal computation may provide useful
-representational biases that let fewer units express more complex
-interactions. Possible advantages: representation efficiency, specialized
-local processing, richer feature interactions, stronger nonlinear
-composition, parameter efficiency, more useful recurrent state behavior.
-Possible disadvantages: harder optimization, unnecessary complexity, slower
-execution, redundant computation, poor hardware utilization, or no
-meaningful advantage over ordinary MLP blocks. **Experimentally determined,
-not assumed** — see Experiment 002/003 in `experiment_protocol.md`.
+The hypothesis is that carrying evidence/uncertainty alongside content may
+let a network propagate information more usefully than an undifferentiated
+scalar activation can — e.g. weighting a confident input more than an
+uncertain one. Possible advantages: more informative message-passing,
+better calibration, improved sample efficiency, useful inductive bias for
+relational/uncertain tasks. Possible disadvantages: harder optimization,
+unnecessary complexity, slower execution, or no meaningful advantage over
+an ordinary MLP unit once compute/parameters are matched. **Experimentally
+determined, not assumed** — see Experiment 002/003 in
+`experiment_protocol.md`.
 
 ### Test the cell before the graph
 
-Before any graph complexity, compare parameter-matched variants: conventional
-MLP-like unit, 1-compartment, 2-compartment, 4-compartment, 8-compartment
-cells. Does compartment structure help, and if so up to what point? Does it
-just increase compute? Does it help specific function classes, sample
-efficiency, or optimization stability? (Experiment 002/003.)
+Before any graph complexity, compare parameter-matched variants: a
+conventional MLP-like unit (plain scalar activation) vs. a `BeliefCell`
+layer using whichever aggregation operator is confirmed. Once that operator
+exists, natural ablation axes include: evidence-weighting on/off,
+uncertainty derived from evidence alone vs. evidence+disagreement, and
+uncertainty used vs. ignored by downstream cells. Does carrying
+evidence/uncertainty help, and for which function classes? Does it just
+increase compute? (Experiment 002/003.)
 
 ## 2. Layers → persistent computational substrate [OPEN, dependent on §1]
 
@@ -169,25 +200,31 @@ correct latent/output) could test whether repeated latent refinement is
 useful. This is a candidate *task design* for later experiments, not an
 architectural commitment.
 
-## 7. What Architecture Specification V0.1 must define
+## 7. What Architecture Specification V0.1 must still define
 
-Before `cell.py` is implemented, a document (a revision of this file) must
-specify, precisely enough to implement:
+Before `integration.py` is implemented, a revision of this file must
+specify, precisely enough to implement, the remaining open items:
 
-1. Cell state — shape, dtype, initialization.
-2. Compartment inputs — what information enters each compartment.
-3. Compartment computation — the exact function each compartment computes.
-4. Compartment parameterization — do compartments share transformations?
-5. Integration mechanism — exactly how compartment outputs combine (`S`).
-6. State update rule — exactly how `h_i(t+1)` is computed (`Update`).
-7. Output/message representation — what a cell can send to others.
-8. Parameter count — closed-form or computed formula per cell.
-9. Computational complexity — FLOPs per cell per iteration.
-10. Limiting cases — can CellV0 reduce to an ordinary MLP or GRU/LSTM cell
-    under some parameter setting? (This makes ablations tractable — see
-    Experiment 003.)
-11. Expected advantages (hypotheses to test).
-12. Expected failure modes (hypotheses to test).
+1. ~~Cell state — shape, dtype, initialization.~~ **SPECIFIED** — see §1
+   (`BeliefCell`: `mu`, `evidence`, `uncertainty`; `tau` dormant until V0.1).
+2. Aggregation inputs — exactly what enters the belief-aggregation
+   operator (which neighboring `BeliefCell`s, which connection parameters,
+   whether a bias/nonlinearity is part of the operator). [OPEN]
+3. Aggregation computation — the exact function producing the outgoing
+   `(mu_i, evidence_i, uncertainty_i)` from incoming `BeliefCell`s. [OPEN]
+4. Aggregation parameterization — per-edge weights `w_ij` as in an
+   ordinary layer, or something richer? [OPEN]
+5. Output/message representation — what a cell sends downstream (its full
+   `BeliefCell`, or a derived subset?). [OPEN]
+6. Parameter count — closed-form or computed formula per cell/layer. [OPEN]
+7. Computational complexity — FLOPs per cell per layer. [OPEN]
+8. Limiting cases — can the aggregation operator reduce to an ordinary
+   weighted-sum-plus-activation (recovering a plain MLP neuron) under some
+   setting? Makes ablations tractable — see Experiment 003. [OPEN]
+9. Expected advantages (hypotheses to test — draft in §1 above). [OPEN]
+10. Expected failure modes (hypotheses to test). [OPEN]
+11. Persistence (`tau`) reintroduction rule for V0.1's recurrence — deferred,
+    not required for V0.0. [OPEN, deferred]
 
 ## 8. Explicitly deferred (do not implement as part of V0)
 
@@ -211,3 +248,8 @@ rejected idea — it is deferred to preserve experimental interpretability
 
 - Repository initialization: document created as a design-space placeholder;
   no architectural decisions made yet.
+- CellV0 state decided: replaced the compartment-based framing of §1 with
+  the `BeliefCell` state `(mu, evidence, uncertainty)`, implemented in
+  `src/models/architecture_v0/cell.py`. The belief-aggregation operator
+  (how N incoming `BeliefCell`s combine into one) remains open — see
+  `docs/research_log.md` for the candidate formulas under consideration.

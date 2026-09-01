@@ -1,10 +1,13 @@
-"""ArchitectureV0 (working name CGRN) -- UNIMPLEMENTED BY DESIGN.
+"""ArchitectureV0 (working name CGRN) -- MOSTLY UNIMPLEMENTED BY DESIGN.
 
-Every module in this package raises NotImplementedError. The mathematical
-specification for CellV0 (state, compartment computation, integration rule,
-update rule) has not been finalized -- see docs/architecture_v0.md Sec 7
-("What Architecture Specification V0.1 must define") and CLAUDE.md Sec 2.
+CellV0's state representation is now decided and implemented: `cell.py`
+defines `BeliefCell`, the belief-state primitive `(mu, evidence,
+uncertainty)` that replaces an ordinary neuron's scalar activation (see
+docs/architecture_v0.md Sec 1 and docs/research_log.md).
 
-Do not fill these in speculatively. The next research task is a math
-document, not code.
+Every other module in this package still raises `NotImplementedError`. In
+particular, how a layer combines N incoming `BeliefCell`s into one outgoing
+`BeliefCell` -- the belief-aggregation operator that will live in
+`integration.py` and become `BeliefLayer` -- is still being decided. Do not
+implement it speculatively; see CLAUDE.md Sec 2.
 """
