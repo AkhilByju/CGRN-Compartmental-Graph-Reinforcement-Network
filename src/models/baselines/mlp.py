@@ -38,6 +38,48 @@ class MLPBaseline(nn.Module):
         return self.net(x)
 
 
+class MLPWithUncertaintyHead(nn.Module):
+    """Conventional heteroscedastic-regression MLP: a shared trunk feeding
+    two linear heads, `mean` and `log_var`, trained with Gaussian NLL
+    (Nix & Weigend, 1994; `torch.nn.functional.gaussian_nll_loss`) -- the
+    standard, architecture-agnostic way to get an explicit per-example
+    uncertainty estimate out of a plain feed-forward network.
+
+    Used starting Experiment 003B as the comparison point for whether
+    `BeliefCell`'s unsupervised `uncertainty` channel tracks known noise
+    levels any better than this conventional alternative
+    (docs/experiment_protocol.md)."""
+
+    def __init__(
+        self,
+        in_features: int,
+        hidden_dim: int,
+        target_dim: int = 1,
+        num_hidden_layers: int = 2,
+        activation: type[nn.Module] = nn.Tanh,
+    ) -> None:
+        super().__init__()
+        if num_hidden_layers < 1:
+            raise ValueError("num_hidden_layers must be at least 1.")
+
+        dims = [in_features] + [hidden_dim] * num_hidden_layers
+        layers: list[nn.Module] = []
+        for a, b in zip(dims[:-1], dims[1:]):
+            layers += [nn.Linear(a, b), activation()]
+        self.trunk = nn.Sequential(*layers)
+        self.mean_head = nn.Linear(dims[-1], target_dim)
+        self.log_var_head = nn.Linear(dims[-1], target_dim)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Returns `(mean, log_var)`, both shape `(batch, target_dim)`. Feed
+        `log_var.exp()` as `var` to `F.gaussian_nll_loss(mean, target, var)`;
+        `log_var` (not `var` directly) is parameterized so the head can
+        output negative values freely instead of needing a positivity
+        constraint on its raw output."""
+        h = self.trunk(x)
+        return self.mean_head(h), self.log_var_head(h)
+
+
 def param_count_for_mlp(
     in_features: int, hidden_dim: int, out_features: int, num_hidden_layers: int = 2
 ) -> int:
