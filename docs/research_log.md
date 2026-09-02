@@ -678,3 +678,146 @@ conclusion from this cross-comparison.
 **Not yet done:** more than 3 widths; seed-level significance testing on
 either fairness regime or the cross-comparison; `reliability`.
 
+## 2026-09-01 — Experiment 004E/004F: the duplication test confirms the scaling failure formally, and the fix works
+
+**Context:** Before touching topology/recurrence/compartments, the user
+asked to first resolve whether 004A's scaling advantage is real. 004E is a
+training-free diagnostic: feed a `BeliefLayer` N identical copies of the
+exact same belief content (same `mu`, `evidence`, `uncertainty`) through N
+"equivalent connections" (every incoming connection given the identical
+content weight and relevance gate, via
+`experiments/004_cellv0_scaling/duplication_test.py`), for N in
+`{1, 2, 4, 8, 16}`. Since the N copies carry zero new information beyond
+N=1, a principled aggregation rule should leave `evidence`/`uncertainty`
+approximately unchanged as N grows. 004F is the user-specified fix:
+`"normalized_precision"` (Method D,
+`src/models/architecture_v0/integration.py::_normalized_precision_fusion`),
+kept alongside `"precision"`, not replacing it. Both the closed-form
+prediction below and `tests/test_duplication_invariance.py` (11 tests, all
+passing) verify these findings; the human-readable CLI report
+(`duplication_test.py`) has not been run by the agent -- see the command at
+the end of this entry.
+
+**Finding -- `"precision"` fails the duplication test exactly as
+predicted, and the failure is provably a property of the formula, not an
+artifact of any particular trained weights.** With canonical "equivalent
+connection" values (`mu=0.5`, `evidence=1`, `uncertainty=1`,
+`content_weight=1`, `relevance_logit=0` so `g=0.5`), Method C's closed-form
+behavior as a function of N:
+
+```text
+              N=1     N=16    ratio
+evidence      0.500   8.000   16.00x   (== N, exactly)
+uncertainty   1.414   0.354   0.25x    (== 1/sqrt(N), exactly)
+mu            0.462   0.462   1.00x    (content estimate correctly unaffected)
+```
+
+`evidence = sum(g*e_j)` and `uncertainty ~ 1/sqrt(sum(precision))` are both
+unnormalized sums over incoming cells, so duplicating the same content N
+times inflates "how much evidence" and deflates "how uncertain" purely as a
+function of width -- exactly what Experiment 004D's evidence-explosion
+finding predicted, now demonstrated as a formal property independent of
+training. `mu` (the content estimate) is correctly invariant in both
+formulas -- duplication only breaks evidence/uncertainty, not the belief
+network's actual prediction machinery.
+
+**004F's fix works exactly as intended.** `"normalized_precision"` divides
+both `evidence` and the base-uncertainty term by `G = sum(g)`, the total
+incoming relevance, while leaving the content-weighting (`alpha`) and
+disagreement term byte-for-byte identical to Method C -- cells still
+compete for influence over `mu` exactly as before. Closed-form (same
+canonical values): `evidence = 1.000` and `uncertainty = 1.000` at
+*every* N from 1 to 16 (the `N` in numerator and denominator cancel
+exactly for identical duplicates). `tests/test_duplication_invariance.py`
+confirms both the failure and the fix numerically (within 2-5% tolerance,
+accounting for `eps`), and additionally checks every N in `{1,2,4,8,16}`
+individually for `normalized_precision` (not just the N=1-vs-16 endpoints).
+
+**Not yet done:** 004G (compact 3-way scale rerun -- does
+`normalized_precision` also perform comparably to `precision` on real
+data, and does its scale-stability advantage hold under training, not just
+this static test?) and 004H (fair MLP optimization check) are written
+(`run_004g.py`, `run_004h.py`) but not run -- commands below. The
+duplication test itself was only run through canonical, hand-chosen
+"equivalent connection" weights, not weights drawn from the network's
+actual `kaiming_uniform_` initialization distribution -- the qualitative
+N-dependence (linear evidence growth, 1/sqrt(N) uncertainty shrinkage for
+Method C; invariance for Method D) is a property of the formula and doesn't
+depend on the specific weight value chosen, but this hasn't been swept
+across a distribution of realistic weights to confirm the *quantitative*
+match holds beyond the one canonical case.
+
+**Commands to run (not yet run by the agent):**
+
+```bash
+python experiments/004_cellv0_scaling/duplication_test.py
+python experiments/004_cellv0_scaling/run_004g.py
+python experiments/004_cellv0_scaling/run_004h.py
+```
+
+## 2026-09-01 — Experiment 004I: "CellV0.1" (Scale-Stable Precision), and a correction to 004F's own reasoning
+
+**Context:** User-specified refinement of Method D (`"normalized_precision"`,
+004F): instead of normalizing `evidence`/base-uncertainty by raw total
+relevance `G = sum(g)`, normalize by an **effective source count** -- a
+participation-ratio (Kish effective-sample-size) statistic over the
+relevance gates, `N_eff = (sum(g))^2 / (sum(g^2) + eps)`. Implemented as a
+5th `BeliefLayer` aggregation method, `"scale_stable_precision"`
+(`src/models/architecture_v0/integration.py::_scale_stable_precision_fusion`),
+kept alongside `"precision"` and `"normalized_precision"`, not replacing
+either. `run_scale` (`experiments/004_cellv0_scaling/scaling_harness.py`,
+used by both `run_004a.py` and `run_004b.py`) now takes an `aggregation`
+parameter (default `"precision"`, unchanged behavior) so the existing
+004A/004B grids can be rerun against any of the five methods without new
+code -- commands at the end of this entry. Not run by the agent (per the
+user's "don't run them" instruction earlier this session).
+
+**A mistake caught by writing the tests first, corrected before it reached
+any real numbers.** The first draft of this method's docstring claimed
+"`N_eff` reduces to exactly `G` for N identical duplicates" -- this is
+wrong. The correct identity is `N_eff = N` (the duplicate *count*,
+independent of the shared relevance value `g0`), while Method D's
+`G = N*g0`. These coincide only if `g0 = 1`, which `sigmoid` never reaches.
+`tests/test_duplication_invariance.py`'s cross-comparison test
+(`test_normalized_and_scale_stable_settle_at_a_fixed_ratio_for_equal_relevance`)
+caught this immediately (asserted numeric equality, got `0.5` vs `1.0` at
+the canonical `g0=0.5`) before any research-log claim was written from the
+wrong premise. Corrected finding: for N *equal-relevance* duplicates, both
+Method D and Method E are each individually duplicate-invariant (neither's
+`evidence`/`uncertainty` changes with `N`) -- but they settle at different
+absolute levels (`e0` for Method D, `g0*e0` for Method E), not different
+`N`-dependence. Both formulas' docstrings and the test suite now state this
+correctly (23 tests across `test_duplication_invariance.py` and the new
+`tests/test_scale_stable_precision.py`, all passing).
+
+**Where Method E actually earns its keep -- unequal relevance, not the
+duplication test.** `tests/test_scale_stable_precision.py` demonstrates the
+real distinguishing behavior directly: with one dominant, highly-relevant
+connection (`g=0.9`) and a growing number of genuinely weak ones
+(`g=0.005`, chosen so even 50 of them sum to less than the dominant
+source), Method E's evidence stays within 2x of the single-source baseline
+out to 50 junk connections, while Method D's evidence is **provably
+insensitive to junk count entirely** when incoming evidence is uniform
+across cells -- the raw-sum normalizer cancels identically against the
+numerator regardless of how relevance is distributed, so Method D cannot
+tell "one relevant source" from "one relevant source plus fifty weak ones."
+An earlier attempt at this same test used `g_junk=0.05` (not 0.005) and
+failed at 50 junk connections (ratio 0.31, outside the intended 2x bound)
+-- 50 connections at `g=0.05` sum to 2.5, which is *not* negligible next to
+the dominant source's `g=0.9`. Left in as a cautionary note in the test
+file: "weak individually" is not the same as "negligible in aggregate,"
+exactly the distinction `N_eff` is designed to get right that a naive
+"ignore small g" heuristic would not.
+
+**Not yet done:** actually running 004A/004B (or 004G) with
+`"scale_stable_precision"` to see whether it reproduces 004A's Result A
+while additionally fixing 004D's evidence-explosion pathology (the
+motivating question) -- commands below. `reliability`/`support_conflict`
+remain untested at any scale.
+
+**Commands to run (not yet run by the agent):**
+
+```bash
+python experiments/004_cellv0_scaling/run_004a.py --aggregation scale_stable_precision
+python experiments/004_cellv0_scaling/run_004b.py --aggregation scale_stable_precision
+```

@@ -3,22 +3,26 @@
 **Status: PARTIALLY SPECIFIED.** CellV0's *state* (§1) is decided and
 implemented (`src/models/architecture_v0/cell.py`). Its *aggregation
 operator* — how a cell combines incoming state into its own — now has
-**three implemented candidates, not a final choice**
+**five implemented candidates, not a final choice**
 (`src/models/architecture_v0/integration.py`'s `BeliefLayer`). Everything
 in §2 onward is still open. No code beyond `cell.py` and `integration.py`
 should be implemented past a stub until the sections marked `OPEN` below
 are resolved by the user and this document is updated.
 
-The next concrete research task is **Experiment 002** — running the three
+The next concrete research task is **Experiment 002/003** — running the
 `BeliefLayer` aggregation methods against each other and a parameter-matched
 plain-MLP baseline (`docs/experiment_protocol.md`) to see whether any of
 them, or none, is worth carrying forward. This is an experimentation task,
-not a further design task — do not add a fourth candidate or otherwise
-keep redesigning §1 before that comparison runs.
+not a further design task — **do not add a further candidate or otherwise
+keep redesigning §1 without the user explicitly specifying the change**, the
+way `"normalized_precision"` (Method D, Experiment 004F) and
+`"scale_stable_precision"` (Method E, Experiment 004I) were: both fix a
+scale-instability the user found in Method C, both diagnosed/specified by
+the user, neither invented by an agent.
 
 ## 1. CellV0 — the basic computational unit
 
-**State: SPECIFIED. Aggregation: THREE CANDIDATES IMPLEMENTED, none chosen.**
+**State: SPECIFIED. Aggregation: FIVE CANDIDATES IMPLEMENTED, none chosen.**
 
 CellV0 replaces the ordinary artificial neuron's single scalar activation
 
@@ -60,17 +64,17 @@ decided design — a `BeliefCell` holds one `(mu, u, e)` state, not several
 sub-states — see `src/models/architecture_v0/compartment.py`, kept only as
 a stub in case a later, richer cell revisits the idea.
 
-### The belief-aggregation operator: three implemented candidates
+### The belief-aggregation operator: five implemented candidates
 
 The `BeliefCell` state is settled; **how a cell combines N incoming
 `BeliefCell`s (each reaching it through a learned connection) into its own
-outgoing `BeliefCell` has three implemented candidates, and no choice among
+outgoing `BeliefCell` has five implemented candidates, and no choice among
 them has been made.** `BeliefLayer` (`src/models/architecture_v0/integration.py`)
-implements all three behind one interface — `BeliefLayer(in_cells,
+implements all five behind one interface — `BeliefLayer(in_cells,
 out_cells, aggregation=...)` — so that comparing them is a controlled
 experiment over the aggregation rule alone, everything else held fixed.
 
-All three share the same learned-connection structure: a content weight
+All five share the same learned-connection structure: a content weight
 `w_ij` (how cell `j`'s content affects cell `i`) producing a message
 `m_ij = w_ij * mu_j`, and a relevance gate `g_ij = sigmoid(a_ij)` (how
 relevant cell `j` is to cell `i`).
@@ -91,24 +95,68 @@ relevant cell `j` is to cell `i`).
   more harshly than the other two methods) sets each sender's influence;
   content is the precision-weighted average; evidence sums `g_ij * e_j`;
   uncertainty combines a precision-derived base term with weighted
-  disagreement.
+  disagreement. Experiment 004D found this sum is **not scale-stable**:
+  `evidence` grows ~linearly with the number of incoming cells regardless of
+  whether they carry new information, and 004E's duplication test confirmed
+  this formally (identical duplicated inputs inflate `evidence` and deflate
+  `uncertainty` with no new information present).
+- **`"normalized_precision"`** — Method D, added in Experiment 004F
+  specifically to fix that instability, keeping everything else about
+  Method C unchanged. Same per-connection precision
+  `pi_ij = g_ij * e_j / (u_j^2 + eps)` and the same content-weighting
+  `alpha_ij = pi_ij / sum(pi)` (cells still compete for influence over
+  `mu_i` exactly as in Method C) — only `evidence` and the base-uncertainty
+  term are normalized by total incoming relevance `G_i = sum_j(g_ij)`
+  instead of left as raw sums: `e_i = sum_j(g_ij * e_j) / G_i` and
+  `u_base_i = sqrt(1 / (mean_j(pi_ij) + eps))`. Conceptual reframing behind
+  the fix: a layer's incoming cells are different *representations* of
+  information, not automatically independent *observations* of it, so
+  duplicating identical content should not mechanically manufacture more
+  evidence. See `src/models/architecture_v0/integration.py`'s
+  `_normalized_precision_fusion` docstring for the full derivation and
+  `docs/research_log.md` ("Experiment 004F") for the motivation.
+- **`"scale_stable_precision"`** — Method E, "CellV0.1", added in
+  Experiment 004I as a refinement of Method D, not a third independent fix.
+  Identical to Method D except *what* `evidence`/the base-uncertainty term
+  are normalized by: instead of raw total relevance `G_i = sum_j(g_ij)`,
+  Method E uses an **effective source count** — a participation-ratio (Kish
+  effective-sample-size) statistic `N_eff_i = (sum_j(g_ij))^2 /
+  (sum_j(g_ij^2) + eps)`. Ten equally-relevant inputs give `N_eff ~ 10`; one
+  dominant input among many near-irrelevant ones gives `N_eff ~ 1`. For N
+  identical, equally-weighted duplicates, `N_eff` reduces to exactly `N`
+  (same as Method D's `G`), so both methods are duplicate-invariant on
+  004E's test — they settle at *different* constants unless the shared
+  relevance happens to equal 1, not a different N-dependence. Where the two
+  genuinely diverge is *unequal* relevance: with uniform evidence across
+  incoming cells, Method D's `evidence` is always exactly the per-cell
+  value no matter how many weakly-relevant connections are added (the raw
+  sum cancels identically), while Method E's `N_eff` correctly discounts
+  for having more effective sources even when individually weak. See
+  `src/models/architecture_v0/integration.py`'s
+  `_scale_stable_precision_fusion` docstring and
+  `tests/test_scale_stable_precision.py` for the full derivation and the
+  test that demonstrates this divergence directly.
 
-All three guarantee `mu_i = f(mu_j, e_j, u_j)` for every incoming cell, so
+All five guarantee `mu_i = f(mu_j, e_j, u_j)` for every incoming cell, so
 gradients from the eventual loss reach not just incoming content but
 incoming evidence and uncertainty too — evidence/uncertainty are not merely
 reported, they influence what the network predicts (verified in
 `tests/test_belief_layer.py`).
 
 Exact formulas, worked examples, and the reasoning behind each are recorded
-in `docs/research_log.md` ("CellV0 aggregation candidates"). **None of the
-three is chosen** — see Experiment 002/003 in `docs/experiment_protocol.md`
-for the comparison that decides whether any of them, over a plain MLP unit,
-is worth keeping. Initial Experiment 002 results (`docs/research_log.md`,
-"Experiment 002 initial results") are mixed-to-negative: no consistent
-performance advantage over a parameter-matched MLP, and the intended
-"uncertainty rises on ambiguous inputs" behavior only appears on the
-easiest task and inverts on harder ones — not yet a final verdict, but a
-reason to treat all three as still unproven, not to prefer one.
+in `docs/research_log.md` ("CellV0 aggregation candidates", "Experiment
+004F", "Experiment 004I"). **None of the five is chosen** — see Experiment
+002/003 in `docs/experiment_protocol.md` for the comparison that started
+deciding whether any of the first three, over a plain MLP unit, is worth
+keeping. Initial Experiment 002 results (`docs/research_log.md`, "Experiment 002
+initial results") are mixed-to-negative: no consistent performance
+advantage over a parameter-matched MLP, and the intended "uncertainty rises
+on ambiguous inputs" behavior only appears on the easiest task and inverts
+on harder ones. Experiment 004 later found `"precision"` specifically *does*
+scale better than a parameter-matched MLP as model size grows
+(`docs/research_log.md` "Experiment 004A/C/D results", "Result A") — not
+yet a final verdict on any method, but a reason to keep treating this as an
+open experimental question, not a settled preference.
 
 ### Why belief cells might matter (hypothesis, not a claim)
 
@@ -158,7 +206,7 @@ If trained with, say, 4 refinement steps, evaluate at 1, 2, 4, 8, 16, and
 possibly more iterations at test time. Does additional inference compute
 help? Does it saturate or degrade? Does the model generalize to more
 reasoning iterations than seen in training? Does task difficulty correlate
-with useful computation depth? (Experiment 004.) Initially the iteration
+with useful computation depth? (Experiment 005.) Initially the iteration
 count is externally controlled — adaptive/learned halting is a later
 extension, not part of V0.
 
@@ -244,15 +292,18 @@ architectural commitment.
 1. ~~Cell state — shape, dtype, initialization.~~ **SPECIFIED** — see §1
    (`BeliefCell`: `mu`, `evidence`, `uncertainty`; `tau` dormant until V0.1).
 2. ~~Aggregation inputs — exactly what enters the belief-aggregation
-   operator.~~ **SPECIFIED (x3)** — all three `BeliefLayer` methods take the
+   operator.~~ **SPECIFIED (x5)** — all five `BeliefLayer` methods take the
    same inputs: incoming `BeliefCell`s, a per-edge content weight `w_ij`, a
    per-edge relevance gate `g_ij`, and a per-output-cell bias. See §1.
-3. ~~Aggregation computation.~~ **THREE CANDIDATES IMPLEMENTED, none
-   chosen** — `"reliability"`, `"support_conflict"`, `"precision"` in
-   `integration.py`. Experiment 002/003 selects among them (or none).
+3. ~~Aggregation computation.~~ **FIVE CANDIDATES IMPLEMENTED, none
+   chosen** — `"reliability"`, `"support_conflict"`, `"precision"`,
+   `"normalized_precision"`, and `"scale_stable_precision"` in
+   `integration.py`. Experiment 002/003 began selecting among the first
+   three (or none); Experiments 004F and 004I added the fourth and fifth to
+   address a scaling failure found in `"precision"`.
 4. ~~Aggregation parameterization.~~ **SPECIFIED** — per-edge weights
    `w_ij` and `g_ij` (an ordinary dense layer's worth of parameters,
-   duplicated for the gate), same for all three methods.
+   duplicated for the gate), same for all five methods.
 5. Output/message representation — what a cell sends downstream (its full
    `BeliefCell`, or a derived subset?). **SPECIFIED for V0.0**: the full
    `BeliefCell`, unchanged, per the implemented `BeliefLayer.forward`.
@@ -284,9 +335,9 @@ rejected idea — it is deferred to preserve experimental interpretability
   memory (fast state / working state / episodic state / slow knowledge)
 - Dynamic/learned graph topology (before the fixed-topology case is understood)
 - Fast contextual association `A_ij(t)` (§4 above)
-- Monte Carlo particles / multiple latent hypotheses (Experiment 011 — only
+- Monte Carlo particles / multiple latent hypotheses (Experiment 012 — only
   after the single-trajectory case is well understood)
-- Energy-based / MCMC inference (Experiment 012 — only if Experiment 011
+- Energy-based / MCMC inference (Experiment 013 — only if Experiment 012
   strongly justifies it)
 - Novel optimizers or novel training objectives
 
@@ -306,3 +357,20 @@ rejected idea — it is deferred to preserve experimental interpretability
   initializing beliefs from raw input features. Experiment 002/003 will
   compare them against each other and a plain-MLP baseline before any one
   is adopted.
+- Fourth aggregation candidate added: `"normalized_precision"` (Experiment
+  004F), user-specified to fix a scale-instability Experiment 004D found in
+  `"precision"` (`evidence` grows unboundedly with `hidden_cells`). Divides
+  `evidence` and the base-uncertainty term by total incoming relevance
+  instead of leaving them as raw sums; content-weighting (`alpha`) and the
+  disagreement term are untouched. Kept alongside `"precision"`, not a
+  replacement for it — see §1 and `docs/research_log.md` ("Experiment
+  004F").
+- Fifth aggregation candidate added: `"scale_stable_precision"` /
+  "CellV0.1" (Experiment 004I), user-specified refinement of
+  `"normalized_precision"`. Normalizes `evidence`/base-uncertainty by an
+  effective source count (a participation-ratio statistic over incoming
+  relevance) instead of raw total relevance, so a long tail of weakly-
+  relevant connections can't inflate evidence the way summing raw relevance
+  still can under `"normalized_precision"`. Kept alongside both
+  `"precision"` and `"normalized_precision"` — see §1 and
+  `docs/research_log.md` ("Experiment 004I").
