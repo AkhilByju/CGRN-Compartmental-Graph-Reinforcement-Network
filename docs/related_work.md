@@ -29,18 +29,18 @@ architecture-design section they bear on so the connection isn't lost later.
   project to check for.
 - **Recurrent/iterative reasoning models** (e.g. universal transformers,
   recurrent depth, "thinking" at inference time) — directly relevant to H2
-  and Experiment 004/008.
+  and Experiment 005/009.
 - **Dendritic / compartmental computation in ANNs** — directly relevant to
   `architecture_v0.md` §1 (CellV0) and H1.
-- **World models** — relevant to H4 and Experiment 009.
+- **World models** — relevant to H4 and Experiment 010.
 - **Diffusion models / iterative denoising** — relevant to
   `architecture_v0.md` §6.
-- **Energy-based models / MCMC inference** — relevant to Experiment 012 (only
-  if gated open by Experiment 011).
+- **Energy-based models / MCMC inference** — relevant to Experiment 013 (only
+  if gated open by Experiment 012).
 - **BabyLM / TinyStories and other restricted-data language evaluation** —
-  relevant to Experiment 010 and H6.
+  relevant to Experiment 011 and H6.
 - **Compositional / systematic generalization benchmarks** — relevant to
-  Experiment 008 (Level 4 of the benchmark ladder).
+  Experiment 009 (Level 4 of the benchmark ladder).
 
 ## Entries
 

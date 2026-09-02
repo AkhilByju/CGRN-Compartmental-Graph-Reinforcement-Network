@@ -16,7 +16,7 @@ conventional supervised problems, not just on tasks designed to flatter it.
 - **Metrics:** MAE, RMSE, R², sample efficiency, training time, inference
   time, parameter count.
 - Goal is *not* to beat boosted trees — it's to characterize where the
-  architecture works. Corresponds to Experiment 006.
+  architecture works. Corresponds to Experiment 007.
 
 ### Track B — Classification
 
@@ -27,7 +27,7 @@ conventional supervised problems, not just on tasks designed to flatter it.
   XGBoost, MLP, proposed architecture.
 - **Metrics:** accuracy, F1, AUROC where appropriate, calibration, sample
   efficiency, convergence speed, runtime, parameter count. Corresponds to
-  Experiment 006.
+  Experiment 007.
 
 ### Track C — Reasoning, World Modeling, and Language
 
@@ -37,7 +37,7 @@ conventional supervised problems, not just on tasks designed to flatter it.
   BabyLM-type evaluation.
 - **Baselines:** MLP where relevant, GRU/LSTM, Transformer, eventually
   Mamba/SSM, eventually other recurrent/cellular alternatives. Corresponds to
-  Experiments 007–010.
+  Experiments 008–011.
 
 ## Benchmark ladder (simplest to hardest)
 
@@ -169,9 +169,9 @@ A particularly important evaluation: performance vs. number of refinement
 iterations, `T = 1, 2, 4, 8, 16, 32`. Plot performance vs. iteration count
 *and* performance vs. actual compute. This distinguishes "the architecture
 benefits from additional thinking" from "the architecture just wastes more
-computation." (Experiment 004; see also `architecture_v0.md` §2.)
+computation." (Experiment 005; see also `architecture_v0.md` §2.)
 
-## Monte Carlo / multiple hypotheses (later stage — Experiment 011+)
+## Monte Carlo / multiple hypotheses (later stage — Experiment 012+)
 
 Legitimate motivation, not added merely because it's mathematically
 interesting: a deterministic latent system (`Z0 -> Z1 -> Z2 -> ...`) commits
@@ -182,7 +182,7 @@ differences), let each trajectory refine independently/semi-independently,
 then score/aggregate. Sweep `K = 1, 2, 4, 8`. Questions: do multiple
 trajectories improve ambiguous reasoning, robustness, or discover alternative
 interpretations — and is the improvement worth the extra inference compute?
-**If no, do not pursue MCMC/energy-based inference** (Experiment 012 is
+**If no, do not pursue MCMC/energy-based inference** (Experiment 013 is
 gated on a positive result here). See `architecture_v0.md` §8 for why
 full MCMC is deferred.
 

@@ -1,6 +1,7 @@
-# Experiment 004 — Recurrent Reuse
+# Experiment 005 — Recurrent Reuse
 
-**Status:** Blocked — depends on Experiment 002/003.
+**Status:** Blocked — depends on Experiment 002/003 (Experiment 004 is a
+scaling study of the same unclustered CellV0 and doesn't gate this one).
 
 **Purpose:** Apply the same computational system (shared parameters)
 repeatedly across refinement iterations. Determine whether parameter reuse

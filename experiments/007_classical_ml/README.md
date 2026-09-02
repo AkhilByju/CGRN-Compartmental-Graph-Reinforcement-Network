@@ -1,10 +1,10 @@
-# Experiment 006 — Classical Regression and Classification
+# Experiment 007 — Classical Regression and Classification
 
 **Status:** Blocked — depends on Experiment 001 (baselines) and at least
 Experiment 002 (a working CellV0-based model) for the architecture to be
-compared. Note this experiment does not strictly require clusters/recurrence
-(003/004/005) and could run with whatever level of ArchitectureV0 exists at
-the time.
+compared. Note this experiment does not strictly require scaling/clusters/
+recurrence (004/005/006) and could run with whatever level of ArchitectureV0
+exists at the time.
 
 **Purpose:** Evaluate the architecture broadly on Track A (regression) and
 Track B (classification) against linear/logistic regression, random forest,

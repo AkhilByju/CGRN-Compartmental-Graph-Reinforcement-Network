@@ -1,6 +1,6 @@
-# Experiment 012 — MCMC / Energy-Based Inference
+# Experiment 013 — MCMC / Energy-Based Inference
 
-**Status:** Blocked — only proceed if Experiment 011 provides strong
+**Status:** Blocked — only proceed if Experiment 012 provides strong
 justification (per `docs/architecture_v0.md` Sec 8 and
 `docs/benchmark_plan.md` "Monte Carlo / multiple hypotheses"). Do not begin
 this experiment as a default next step.

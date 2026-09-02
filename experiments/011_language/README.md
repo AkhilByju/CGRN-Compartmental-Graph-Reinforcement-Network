@@ -1,7 +1,7 @@
-# Experiment 010 — Language
+# Experiment 011 — Language
 
-**Status:** Blocked — depends on Experiment 005 at minimum, and ideally
-009's world-representation results to interpret language-model behavior.
+**Status:** Blocked — depends on Experiment 006 at minimum, and ideally
+010's world-representation results to interpret language-model behavior.
 
 **Purpose:** Start with TinyStories or an equivalent highly constrained
 small corpus (verify real language acquisition, test generation, compare

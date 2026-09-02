@@ -1,8 +1,8 @@
-# Experiment 007 — Algorithmic / Relational Reasoning
+# Experiment 008 — Algorithmic / Relational Reasoning
 
-**Status:** Blocked — depends on Experiment 005 (clustered, recurrent
+**Status:** Blocked — depends on Experiment 006 (clustered, recurrent
 architecture) for the strongest test, though partial results with
-Experiment 004's unclustered recurrent model are informative too.
+Experiment 005's unclustered recurrent model are informative too.
 
 **Purpose:** Arithmetic, sequence transformations, relational inference,
 graphs, sorting, composition (Level 3 of the benchmark ladder). Determine

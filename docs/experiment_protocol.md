@@ -12,15 +12,16 @@ status and links back to the hypotheses it tests.
 | 001 | Baseline Validation | Implement tiny MLP, tiny recurrent model, tiny Transformer, and a common training/evaluation framework. Establish trusted baselines. |
 | 002 | CellV0 | Introduce the compartmental cell alone. No graph, no stochasticity, no dynamic connections, no novel learning rule. Determine whether the richer cell deserves to exist (Q1–Q4). |
 | 003 | Cell Ablations | Vary number of compartments, integration mechanism, hidden-state dimensions, compartment sharing, gating. Determine which aspects actually matter (Q5–Q6). |
-| 004 | Recurrent Reuse | Apply the same computational system repeatedly (shared parameters across iterations). Determine whether parameter reuse + extra inference compute improves learning/reasoning (H2). |
-| 005 | Cluster Structure | Organize cells into local circuits with a **fixed** topology. Determine whether local specialization + sparse global communication adds useful inductive bias (H3). |
-| 006 | Classical Regression and Classification | Evaluate broadly against Track A/B baselines (linear/logistic regression, random forest, boosted trees, MLP). Characterize the architecture as a general ML model. |
-| 007 | Algorithmic / Relational Reasoning | Arithmetic, sequence transformations, relational inference, graphs, sorting, composition. Determine whether iterative computation helps on structured tasks. |
-| 008 | OOD Generalization | Increase problem complexity beyond training (Level 4 of the benchmark ladder). Determine whether reusable computation generalizes systematically (H2). |
-| 009 | Latent World Modeling | Introduce procedural relational environments (Level 5). Test whether the architecture develops stable world representations (H4). |
-| 010 | Language | TinyStories, then BabyLM-style restricted language data (Level 6). Determine whether the architecture can operate as a genuine language model (H6). |
-| 011 | Multiple Latent Trajectories | Introduce stochastic particles (multi-hypothesis latent state). Test whether maintaining multiple internal hypotheses improves reasoning. |
-| 012 | MCMC / Energy-Based Inference | Only if Experiment 011 provides strong justification. |
+| 004 | CellV0 Scaling | Model-size and dataset-size scaling of the same frozen CellV0 (`precision` aggregation) vs. a parameter-matched MLP: does the belief mechanism's relative advantage grow, shrink, or stay parallel with scale (Q3–Q4), and does Experiment 003D's evidence/uncertainty intervention effect change with model size? No architecture, depth, optimizer, or training-procedure changes. |
+| 005 | Recurrent Reuse | Apply the same computational system repeatedly (shared parameters across iterations). Determine whether parameter reuse + extra inference compute improves learning/reasoning (H2). |
+| 006 | Cluster Structure | Organize cells into local circuits with a **fixed** topology. Determine whether local specialization + sparse global communication adds useful inductive bias (H3). |
+| 007 | Classical Regression and Classification | Evaluate broadly against Track A/B baselines (linear/logistic regression, random forest, boosted trees, MLP). Characterize the architecture as a general ML model. |
+| 008 | Algorithmic / Relational Reasoning | Arithmetic, sequence transformations, relational inference, graphs, sorting, composition. Determine whether iterative computation helps on structured tasks. |
+| 009 | OOD Generalization | Increase problem complexity beyond training (Level 4 of the benchmark ladder). Determine whether reusable computation generalizes systematically (H2). |
+| 010 | Latent World Modeling | Introduce procedural relational environments (Level 5). Test whether the architecture develops stable world representations (H4). |
+| 011 | Language | TinyStories, then BabyLM-style restricted language data (Level 6). Determine whether the architecture can operate as a genuine language model (H6). |
+| 012 | Multiple Latent Trajectories | Introduce stochastic particles (multi-hypothesis latent state). Test whether maintaining multiple internal hypotheses improves reasoning. |
+| 013 | MCMC / Energy-Based Inference | Only if Experiment 012 provides strong justification. |
 
 Do not start an experiment before the ones above it in the sequence have
 produced results, unless the user explicitly directs otherwise.

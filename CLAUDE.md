@@ -80,7 +80,7 @@ questions.
 | `docs/architecture_v0.md` | The architecture design space (compartmental cells, layers→persistent substrate, iterative refinement, graph/cluster organization, fixed-before-dynamic graph, fast associations, latent world-state) — **currently unspecified**, framed as open design questions |
 | `docs/hypotheses.md` | H1–H6 falsifiable hypotheses, CellV0 research questions Q1–Q6, what counts as a positive/mixed/negative result |
 | `docs/benchmark_plan.md` | Three evaluation tracks (Classical ML / Classification / Reasoning-World-Language), the 7-level benchmark ladder, sample- and parameter- and compute-efficiency protocols |
-| `docs/experiment_protocol.md` | The 001–012 experiment sequence, and the exact metadata every run must record |
+| `docs/experiment_protocol.md` | The 001–013 experiment sequence, and the exact metadata every run must record |
 | `docs/related_work.md` | Literature tracker (fill in as papers are read) |
 | `docs/research_log.md` | Dated research diary — append, don't rewrite history |
 
@@ -115,7 +115,7 @@ diff.
 - Python ≥3.10, PyTorch ≥2.2 (MPS backend for local Apple Silicon dev, CUDA/CPU
   as fallback — see `src/utilities/device.py`).
 - Install: `pip install -e ".[dev]"`. Run tests: `pytest`.
-- Classical-ML baselines (Track A, Experiment 006) need the optional
+- Classical-ML baselines (Track A, Experiment 007) need the optional
   `classical-ml` extra (`xgboost`) — not installed by default.
 
 ## 7. When in doubt

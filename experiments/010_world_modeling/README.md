@@ -1,6 +1,6 @@
-# Experiment 009 — Latent World Modeling
+# Experiment 010 — Latent World Modeling
 
-**Status:** Blocked — depends on Experiment 005 (a full, if small,
+**Status:** Blocked — depends on Experiment 006 (a full, if small,
 persistent-substrate model) and the synthetic-world generator
 (`src/data/worlds/`, not yet implemented).
 

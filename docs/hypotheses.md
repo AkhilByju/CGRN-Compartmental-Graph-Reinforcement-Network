@@ -11,30 +11,30 @@ invalidate the others.
 
 - **H1 — Computational Unit Hypothesis.** Structured compartmental units
   provide greater representational efficiency than conventional point-like
-  units under certain classes of problems. Tested by: Experiments 002–003.
+  units under certain classes of problems. Tested by: Experiments 002–004.
 - **H2 — Recurrent Computation Hypothesis.** Reusing parameters over multiple
   reasoning iterations provides stronger systematic generalization than
   increasing feed-forward depth, at matched parameter budgets. Tested by:
-  Experiments 004, 008.
+  Experiments 005, 009.
 - **H3 — Circuit Hypothesis.** Clustered local computation with selective
   global communication provides useful inductive biases for relational
-  problems. Tested by: Experiment 005.
+  problems. Tested by: Experiment 006.
 - **H4 — World-State Hypothesis.** Iteratively refined latent states
   represent underlying relational worlds more consistently than models
-  optimized only for surface prediction. Tested by: Experiment 009.
+  optimized only for surface prediction. Tested by: Experiment 010.
 - **H5 — Sample-Efficiency Hypothesis.** The proposed architecture learns
   certain structured problems from fewer examples. Tested by: the
   sample-efficiency protocol in `benchmark_plan.md`, applied across
-  Experiments 006–009.
+  Experiments 004, 007–010.
 - **H6 — Language Hypothesis.** The architecture can support meaningful
   language modeling despite not being organized as a Transformer stack.
-  Tested by: Experiment 010.
+  Tested by: Experiment 011.
 
 ## CellV0 research questions (Q1–Q6)
 
 These are the *only* questions the first experiments need to answer — resist
 scope creep beyond them until they're settled (see `architecture_v0.md` §7–8
-and `experiment_protocol.md` Experiments 002–003).
+and `experiment_protocol.md` Experiments 002–004).
 
 - **Q1.** Can CellV0 approximate ordinary functions as reliably as
   conventional networks?
