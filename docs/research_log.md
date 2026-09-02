@@ -321,3 +321,97 @@ exactly the kind of "rigorously analyzed failure" `docs/hypotheses.md`
 - None of this yet justifies dropping any of the three methods, or
   concluding CellV0 "doesn't work" -- see `docs/research_thesis.md` §2 on
   not over-concluding from a first pass at one scale.
+
+## 2026-09-01 — Experiment 003D results: evidence/uncertainty are not decorative, but aren't calibrated either
+
+**Context:** Follow-up to Experiment 002's open question ("is `(evidence,
+uncertainty)` actually used, or has the network learned to route around
+it?"). Trained a `precision` `BeliefNetwork` on Experiment 002's six
+datasets (5 seeds, 2000 steps, `hidden_cells=16`, `lr=1e-2` -- identical
+hyperparameters to Experiment 002 for comparability), then at inference
+time perturbed the evidence/uncertainty that the trained `layer1` hands to
+`layer2` under four conditions (`src/evaluation/intervention.py`) and
+measured the change in test R²/accuracy relative to the unperturbed
+baseline. Full setup: `experiments/003_cell_ablation/README.md` "003D";
+code: `evidence_uncertainty_harness.py`, `run_003d.py`; raw per-run JSON in
+`results/raw/003d_evidence_uncertainty_intervention_*` (gitignored,
+regenerate with `python experiments/003_cell_ablation/run_003d.py --seeds 0
+1 2 3 4 --steps 2000`).
+
+**Finding 1 -- performance is NOT invariant to evidence/uncertainty
+perturbation; `(e, u)` are load-bearing, not decorative, on every dataset
+except the most linear ones.**
+
+```text
+                 baseline    evidence=1   uncertainty=1   shuffle(e,u)   uncertainty=random
+r0_linear        0.9924 R2   -0.008       -0.008          -0.049         -0.018
+r1_nonlinear     0.9288 R2   -0.327       -0.327          -1.988         -0.636
+r2_interaction   0.9699 R2   -1.145       -1.536          -10.924        -12.284
+c0_linear        0.9473 acc  +0.000       -0.001          +0.001         -0.003
+c1_xor           0.9033 acc  -0.044       -0.159          -0.186         -0.257
+c2_interaction   0.9467 acc  -0.177       -0.310          -0.379         -0.423
+```
+
+(deltas are mean-across-5-seeds change from baseline; R² can go arbitrarily
+negative -- it is not bounded below like accuracy -- so e.g. r2's -12.284
+means predictions become far worse than always predicting the training
+mean, not a small regression.)
+
+Every perturbation on every dataset except `r0_linear`/`c0_linear` causes a
+substantial-to-catastrophic performance drop. That directly answers 003's
+motivating question: for `precision`, the network has **not** learned to
+route around its evidence/uncertainty channels -- `layer2`'s aggregation
+depends on them in a way that matters a great deal for the final
+prediction, most dramatically on the interaction-heavy tasks (`r2`, `c2`)
+and XOR (`c1`).
+
+**Finding 2 -- the "decorative state" pattern does hold, but only on the
+two most linear datasets.** `r0_linear` and `c0_linear` -- the one dataset
+per track with no interaction/nonlinearity -- show deltas within the
+seed-to-seed noise band (std ~0.004-0.024, comparable to the delta itself).
+On every other dataset the effect is large and consistent in sign across
+all 5 seeds individually (not just the mean). So "is CellV0 basically an
+MLP with decorative state" gets a dataset-dependent answer: yes-ish on
+trivial linear problems (where there is little for a weighting mechanism
+to do), clearly no on anything with interactions or XOR-like structure.
+
+**Finding 3 (structural, not a bug -- verified directly) -- for
+single-input-feature datasets (`r0_linear`, `r1_nonlinear`), `layer1`'s
+output evidence and uncertainty are exactly input-independent constants
+satisfying `evidence * uncertainty^2 == 1` (checked numerically: e.g.
+`(out.evidence * out.uncertainty**2)` is `1.0000` for every hidden cell to
+float32 precision). This follows directly from `_precision_fusion`'s
+formula with exactly one incoming cell: `BeliefCell.from_observed_features`
+fixes the raw input's `evidence=1, uncertainty=1`, so with one incoming
+cell `alpha=1` trivially, disagreement is exactly 0, and
+`base_uncertainty_sq = 1/precision = 1/(g*e_j) = 1/g` while
+`evidence_out = g*e_j = g` -- giving `evidence_out * uncertainty_out^2 ==
+1` exactly, independent of `x`. That is *why* `evidence_ones` and
+`uncertainty_ones` produce numerically identical deltas on `r0_linear`/
+`r1_nonlinear` (setting either channel to 1 collapses `layer2`'s precision
+weighting to the same value, `g_layer2 * g_layer1`) but clearly different
+deltas everywhere else (`r2_interaction`, `c1_xor`, `c2_interaction` all
+have >1 input feature, so `layer1`'s evidence/uncertainty do vary with
+`x`). Not itself evidence for or against "decorative state" -- it's a
+reminder that with a single incoming cell, `precision`'s evidence/
+uncertainty carry no *per-example* information no matter what, only a
+fixed per-hidden-cell learned weighting.
+
+**Relation to Experiment 002:** this result does not contradict Experiment
+002's calibration finding (uncertainty doesn't track true ambiguity,
+direction flips on harder tasks). "The network relies heavily on this
+channel" and "this channel represents genuine epistemic uncertainty" are
+different properties -- 003D shows the former is true (at least for
+`precision`, on non-trivial datasets); Experiment 002 already showed the
+latter is not. Together: `evidence`/`uncertainty` behave like a real,
+load-bearing internal precision-weighting/gating mechanism the network
+learned to lean on for combining cell content -- just not one that
+happens to track the ambiguity/noise structure a human would call
+"uncertainty."
+
+**Not yet done:** `reliability`/`support_conflict` (only `precision` was
+tested here); whether the same catastrophic-on-interaction pattern holds
+at other `hidden_cells`/scales; and whether the effect is specific to the
+`layer1`->`layer2` boundary or would also show up in a deeper stack once
+one exists (Experiment 005+).
+
