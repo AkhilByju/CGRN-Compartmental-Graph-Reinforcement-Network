@@ -604,3 +604,77 @@ sample-efficiency edge on `r2`/`u2` holds, grows, or shrinks at other
 scales (a joint model-size x data-size grid) is untested. `reliability` not
 run.
 
+## 2026-09-01 — Cell-count-matched results: a weaker, more mixed advantage than parameter-matched, and a surprising cross-comparison
+
+**Context:** The second fairness regime (docs/experiment_protocol.md
+Experiment 004, "Parameter-matched vs. cell-count-matched"): `mlp`
+(`hidden_dim=N`) vs. `precision` (`hidden_cells=N`) at the *same* `N`,
+rather than the same parameter count. Run by the user
+(`run_004_cell_count_matched.py`) at N0=15/N1=68/N2=271 -- the same widths
+Experiment 004A's own parameter-matching search landed on for S0/S2/S4 --
+100,000 training examples, 5 seeds, otherwise identical frozen
+hyperparameters. Because every connection in a `BeliefLayer` carries both a
+content weight `w` and a relevance parameter (`integration.py`), matching
+`N` does *not* match parameters: `precision` has **82-99% more parameters**
+than `mlp` at the same `N` (the gap widens toward ~2x as `N` grows, since
+`BeliefLayer`'s `hidden_cells^2` term dominates). Full data:
+`results/raw/004_cell_count_matched_*.json`,
+`results/processed/004_cell_count_matched_summary.json`.
+
+```text
+                    N0 (15 units, +82-86% params)  N1 (68 units, +95-96%)  N2 (271 units, +99%)
+r2_interaction                     -0.0017                +0.0012                +0.0003
+c2_interaction                     -0.0043                -0.0012                +0.0026
+u2_heterosced.                     +0.0003                +0.0017                +0.0155
+```
+
+(delta = precision_mean - mlp_mean, 5 seeds.)
+
+**Finding -- despite an 82-99% parameter handicap in `mlp`'s favor,
+`precision` mostly does not win by much, and loses outright at the
+smallest size on two of three datasets.** At N0, `precision` is *behind*
+`mlp` on `r2_interaction` (-0.17pt R2) and `c2_interaction` (-0.43pt
+accuracy) even though it has 82-86% more parameters to work with there. Only
+at N2 (271 units, ~150K vs ~75K params) does `precision` pull clearly
+ahead, and only on `c2_interaction` (+0.26pt) and `u2_heteroscedastic_interaction`
+(+1.55pt) -- `r2_interaction` stays essentially flat (+0.03pt) even with
+`precision` given nearly double the parameters. Taken at face value, this
+is a weak result for "one `BeliefCell` is intrinsically richer than one
+ordinary neuron": if it were unambiguously true, the *free* extra
+parameters here should have produced a clearer, more consistent edge than
+this.
+
+**A surprising cross-comparison with 004A's parameter-matched result.** At
+the closest matched point (N2 = 271 units ~ Experiment 004A's S4, ~150K
+`precision` params), parameter-matched (004A) shows a *larger* `precision`
+advantage than cell-count-matched does here, on 2 of 3 datasets:
+
+```text
+                    004A parameter-matched, S4    cell-count-matched, N2
+r2_interaction              +0.0070                       +0.0003
+c2_interaction               +0.0141                       +0.0026
+u2_heterosced.               +0.0181                       +0.0155
+```
+
+This is the opposite of the naive expectation -- cell-count-matched hands
+`precision` extra parameters *for free* on top of matched width, so if
+"richer cell, costs more parameters" were the whole explanation for 004A's
+S4 result, cell-count-matched should show an equal or *larger* gap, not a
+smaller one. Instead, forcing `mlp` to spend an *equal total budget* as
+extra width (004A's regime) produced a bigger `precision` advantage than
+giving `precision` bonus parameters at matched width (this regime). This
+doesn't fit any of the three outcomes the experiment spec sketched in
+advance cleanly, and is flagged here as an open observation, not a
+conclusion -- five seeds at three widths is not enough to rule out noise,
+and no significance test has been run on this specific comparison. A
+plausible non-mechanistic explanation: `mlp`'s *width* itself (not just its
+parameter count) may matter for how well it fits this data at a fixed
+6,000-step budget, independent of the architecture question -- 004A's wider
+matched `mlp` (e.g. ~384 hidden units at S4 for `c2_interaction`, vs. this
+section's `mlp` capped at 271) may fit better for reasons unrelated to
+`precision` vs. `mlp` at all. Worth isolating before drawing a real
+conclusion from this cross-comparison.
+
+**Not yet done:** more than 3 widths; seed-level significance testing on
+either fairness regime or the cross-comparison; `reliability`.
+
