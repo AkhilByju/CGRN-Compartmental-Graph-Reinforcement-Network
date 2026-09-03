@@ -1611,3 +1611,87 @@ whether CellV1.5 replaces or extends §5/§14. Worth resolving that one
 specifically before implementation starts, since it determines how much
 of the existing dense/sparse/field machinery this variant actually reuses
 versus supersedes.
+
+## 2026-09-03 (later still) — CellV1.5 fully specified: all six open questions resolved in one turn
+
+**Context:** Following the previous entry's resolution of `w_ij`'s
+representation, the user resolved the remaining six open questions from
+`docs/architecture_v1.md` §16 in a single turn, explicitly to avoid
+another round of back-and-forth and let implementation proceed directly:
+"I'd resolve all six now and let the coding agent implement a single
+clean CellV1.5, rather than opening another round of architecture
+debate."
+
+**Decisions, in full:**
+
+- **Utility (pruning signal):** for edge `i -> j`, full effective
+  transmitted content `m_ij = w_ij * a_ij(t) * mu_i`, loss-sensitivity
+  score `q_ij = |m_ij * dL/dm_ij|`, EMA'd as `U_ij <- 0.99 U_ij + 0.01
+  q_ij`. Prune by low `U`, explicitly not by small `w` (a small-weight
+  edge can still be structurally important under some functional
+  states). Edge metadata is exactly `{endpoints, U, age}`.
+- **Growth score:** `G_ij = mean_batch(phi_i . phi_j * A_i * A_j)`,
+  where `A_i` is an EMA'd per-cell activity measure, `A_i <- 0.99 A_i +
+  0.01 (|mu_i| * e_i / (1 + u_i))`. No new learned function ("we already
+  have enough learned machinery") — candidate retrieval stays ANN/MIPS
+  over the already-validated `phi`-space from §15's `AssociationFunction`.
+- **Aggregation:** content `m_ij = w_ij * mu_i` and precision `p_ij =
+  a_ij(t) * e_i/(u_i^2+eps)` — the `w`/`a` split mirrors CellV0.1's
+  successful content/gate separation — fused over structural
+  in-neighbors via the same scale-stable precision formula every CellV1
+  variant already uses. Self is always included, via the established
+  two-source `precision_fusion` + learned-gate pattern (not injected
+  into the neighbor sum), then the existing residual write gate.
+- **Edge budget/bootstrap:** one *global* synapse budget `E_max = k_bar
+  * n_cells`, default `k_bar = 8`, per-cell degree otherwise
+  unconstrained (a cell might end up with 2 edges or 30 — "that's what
+  we want"). One candidate-growth pass before training fills the budget
+  from a near-random initial topology, explicitly disposable. One safety
+  constraint, no more: every cell needs at least one incoming structural
+  edge.
+- **Plasticity schedule:** keyed to optimizer steps, never refinement
+  steps. 200-step warm-up (topology fixed, everything else trains
+  normally), then every 100 steps: prune the bottom 5% of edges by `U`
+  (subject to the in-degree-1 protection), grow the same number of
+  highest-`G` candidates. Rewiring freezes for the last ~20% of training
+  so the substrate can settle before evaluation. All four numbers
+  (200/100/5%/20%) are explicitly config, not theoretical constants.
+- **Scope:** CellV1.5 replaces dense CellV1's local/global routing (§5),
+  the RFF field (§13), and the global field (§14) *entirely* for this
+  variant — "do not run CellV1.5 alongside" any of them. One substrate;
+  local-vs-global is never labeled or measured, only emergent from which
+  structural edges happen to be short/long-range for a given input.
+  Those sections remain in the repository, frozen, as historical
+  baselines — the same convention already used for CellV1 Dense
+  Reference (§7) after §11.
+
+**Status:** `docs/architecture_v1.md` §16 rewritten top-to-bottom from
+"PROPOSED, NOT FINALIZED" to "SPECIFIED," incorporating every formula
+above precisely, plus a new §16.10 "implementation-choice defaults"
+subsection for the handful of genuine glue-level gaps the spec didn't
+need to cover (candidate retrieval reuses `lsh.py`'s existing
+random-hyperplane LSH machinery, applied to `phi`-space instead of
+routing vectors, rather than a new ANN dependency; `A_i`'s EMA decay
+reuses `U_ij`'s `0.99/0.01`; `d_s=16` as a default, matching the scale of
+`association_dim`/`global_dim` elsewhere; the plasticity-event trigger
+is an explicit model method the training loop calls after
+`optimizer.step()`, not folded into `forward`, since it's
+architecture-specific rather than generic training infrastructure). No
+code written yet — this entry and the doc update are the specification
+step; implementation is next.
+
+**Why:** Every formula, constraint, and scope decision above is the
+user's; the implementation-choice defaults are glue-level (which ANN
+mechanism to reuse, an unspecified EMA decay, a dimension default,
+where a training-loop hook lives) in the same spirit as §6's
+encoder/decoder defaults — not architecture decisions.
+
+**Follow-up:** Implementation is the next step: a new
+`src/models/architecture_v1/structural_*.py` module family (structural
+addresses/projections, the sparse edge registry as plain tensors/buffers
+— never `nn.Parameter` — utility/activity EMA tracking, LSH-based growth
+candidate retrieval reusing `lsh.py`, the sparse-neighbor aggregation
+step, and the plasticity-event method), tests mirroring this codebase's
+existing shape/invariant/gradient-finiteness convention, and training-
+loop wiring for the optimizer-step-keyed plasticity schedule. No
+experiment run yet.
