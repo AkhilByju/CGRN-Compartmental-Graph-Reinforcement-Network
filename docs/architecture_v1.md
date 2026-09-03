@@ -28,6 +28,30 @@ recurrent/message-passing analogue of GNN oversmoothing). Fixed with a
 learned per-channel write gate: `next = (1 - beta) * old + beta *
 proposal`.
 
+**CellV1.3 (§13, next day):** CellV1.1's discrete LSH candidate search
+replaced with a continuous, learned density field (differentiable
+mean-shift, self-anchored orthogonal random Fourier features) — local
+structure emerges as density modes, no `num_groups`/`K_local`
+hyperparameter anywhere. Local-only, one step (`T=1`); global field
+communication designed but deferred.
+
+**CellV1.3.1 (§14, same day):** The deferred global communication added
+on top of CellV1.3's local field, reusing dense CellV1's send/need/
+query-key design (§5 Part III) via exact linear attention (Katharopoulos
+et al. 2020), plus a new task (`dynamic_groups_global`) built specifically
+to need it. A real, scale-dependent instability was found and partly
+chased down — one seed of the *local-only* field still collapses at the
+largest tested scale even after the fix that resolved an earlier,
+different collapse in the global pathway. Flagged open, not resolved.
+
+**CellV1.4 (§15, same day):** The ORFF-approximated local kernel replaced
+with an exact, learned one (`phi_i = softplus(F_assoc(...))`,
+`K_ij = phi_i . phi_j`) — no routing coordinate, no bandwidth/mass
+functions, no random-feature convergence question. Matches CellV0.1's
+accuracy across a 4-level complexity sweep with substantially less seed
+variance than either field variant, and no collapse on any of 12
+(level, seed) combinations tested.
+
 ## 0. Relationship to Architecture V0
 
 `docs/architecture_v0.md` froze the "what is one cell" question in favor
@@ -625,7 +649,204 @@ the original conversation but not implemented — this pass is local-field-
 only, one step. `evidence`/`uncertainty`'s noisier convergence (vs.
 `mu`/`r_bar`) is flagged, not resolved.
 
-## 14. Revision history
+## 14. CellV1.3.1 — Global communication for the field
+
+**Status: implemented, unit-tested, one comparison sweep run under two
+protocols. A real, unresolved reliability question found at scale.**
+CellV1.3 (§13) shipped local-field-only; global (cross-region)
+communication was designed in the original conversation but deferred.
+Added here on top of the frozen local field (`field_fusion.py`,
+untouched), via an additive `use_global` constructor flag — `False`
+executes the identical local-only lines §13 already had.
+
+### The mechanism (`global_field.py`)
+
+Reuses dense CellV1's send/need/query-key design (§5 Part III) rather
+than inventing a new one — a cell's send gate ("how useful is my
+information to others") and need gate ("how much outside information do
+I currently need") are the same shape/role as before, but retrieval is
+**exact linear attention** (Katharopoulos et al. 2020, "Transformers are
+RNNs"), not the field's RFF approximation: `phi(x) = ELU(x) + 1 > 0`
+always, so `K^G(i,j) := phi(q_i)^T phi(k_j)` *is* the compatibility
+kernel by definition — no random projection, no variance, none of the
+convergence-with-R questions §13's local field spent most of its
+debugging on. `O(n_cells * global_dim)`, `global_dim` (`d_g`, 8-16)
+independent of `n_cells`. Exact self-removal (a receiver's raw reduction
+provably includes, and then has subtracted, its own contribution) —
+same self-anchoring argument as §13's local field, but here it's exact
+subtraction of an exactly-known algebraic identity, not anchoring an
+approximation to a known constant.
+
+Fused into the existing local proposal via `fusion.py::precision_fusion`
+— the same rule dense/sparse CellV1 already uses for its own
+self+local+global fuse (§5 Part IV) — over a learned per-source gate,
+before handing the result to the *unmodified* `WriteGateFunction` as its
+proposal argument. The need gate scales the global proposal's evidence
+(`e_global * need`) rather than adding a new `WriteGateFunction` input —
+functionally equivalent (low need → weak evidence → the existing
+precision-weighted fuse discounts it) without touching a function this
+line of work has kept frozen since §12.
+
+### A new task, built to actually require this
+
+`dynamic_groups`'s existing cross-group term pairs groups by spatial
+center (`k1`) — close enough to each object's own encoded features that
+a wide local field could plausibly shortcut it without any real
+non-local channel. `dynamic_groups_global`
+(`src/data/synthetic/dynamic_groups.py`) pairs groups by `argmax`/
+`argmin` of their *aggregate values* `h_k = tanh(sum_j v_j)` instead —
+content only knowable after comparing every group's sum against every
+other's, which a similarity-based local field cannot shortcut by
+construction. 5 new tests in `tests/test_dynamic_groups_data.py`.
+
+### What was found
+
+At the field's original comparison scale (`n_cells=128`,
+`dynamic_groups`, `R=256`, fixed 1500 steps, 3 seeds), `field_local_global_t2`
+(R²=0.7872±0.0146) edges out local-only `field_t2` (0.7784±0.0043),
+`field_t1` (0.7787±0.0094), and `cellv0.1` (0.7662±0.0145) — a modest,
+real advantage for the global channel, no collapse in this final
+recorded run.
+
+Extending to a 4-level complexity sweep (`dynamic_groups_global`,
+easy/medium/hard/very_hard = 24/48/96/192 objects) under the original
+fixed-1500-step protocol found real single-seed collapses — attributed
+(per `global_field.py::GlobalSendFunction`'s docstring, written
+contemporaneously) to an unlearned, loud global channel getting a full
+vote in the fused proposal from step 0; fixed by initializing `send`/
+`need`'s bias near-off (`init_bias=-2.0`, matching `WriteGateFunction`'s
+existing convention) instead of the unbiased default.
+`diagnose_global_collapse.py` was written to isolate undertraining vs.
+RFF-resolution vs. a deeper redesign as the explanation for one specific
+collapse (`very_hard`/seed=0, test R²=0.224 vs. local-only 0.781 and
+CellV0.1 0.816 at the time) — no saved output from running it was found
+in this working tree, so its three-way conclusion is not independently
+confirmed by this entry.
+
+The fixed-step protocol itself was then flagged as confounded (a
+24-object and a 192-object problem don't converge on the same
+optimization timescale) and replaced with convergence-based training
+(early stopping, `R` raised to 512). Under that corrected protocol, R²
+stays close across `cellv0.1`/`field_t2`/`field_local_global_t2` at every
+level — **except `field_t2` (local-only, no global) at `very_hard`/seed=0,
+which converged to R²=0.0667** against seed 1/2's 0.79/0.82. The
+instability recurred under the corrected protocol and higher `R`, and
+this time in the *local-only* variant — not explained by the "global
+channel amplifies it" framing that motivated `diagnose_global_collapse.py`,
+and not fixed by the send/need init change (a global-only mechanism).
+**This is open.** Full numbers: `docs/research_log.md`'s CellV1.3.1 entry.
+
+### Implementation map
+
+| Module | Contents |
+|---|---|
+| `global_field.py` | `elu_feature_map`, `GlobalSendFunction`, `GlobalNeedFunction`, `GlobalQueryKey`, `linear_global_belief_field` |
+| `field_dynamics.py` | `FieldRefinementStep` gained `use_global`/`global_dim`; local-only path unchanged when `False` |
+| `field_model.py` | `SelfOrganizingRefinementField` passes `use_global`/`global_dim` through |
+
+Tests: `tests/test_global_field.py` (8 tests: validity, finite gradients,
+exact self-exclusion for an isolated cell, output sensitivity to other
+cells, need=0 independence, permutation equivariance, no quadratic
+scaling, gradients reaching every new parameter) — full suite 274/274.
+**Gap:** `field_dynamics.py`'s module docstring claims a
+"`tests/test_field_local_global_ablation.py` zero-regression check"
+verifying `use_global=False` is byte-identical to pre-change behavior —
+no file or test by that name exists in this repository. The claim should
+be backed by an actual test or removed from the docstring; not fixed as
+part of this write-up.
+
+## 15. CellV1.4 — Learned Association Field
+
+**Status: implemented, unit-tested, run through the same 3-seed/4-level
+convergence sweep as the field variant it replaces. Currently the more
+reliable of the two field-style CellV1 variants.** CellV1.3's local field
+(§13) spent `R=256`-`512` random Fourier features approximating a
+Gaussian kernel chosen ahead of time over a routing coordinate `r` — and
+§14 found that even at `R=512` this approximation is not fully
+scale-stable (one seed still collapsed at `very_hard`). The user's
+redesign, in their own words: *"We shouldn't spend hundreds of dimensions
+accurately approximating a similarity function that we chose. The
+network should learn the similarity function itself."*
+
+### The mechanism (`learned_association.py`, `association_dynamics.py`)
+
+```text
+phi_i = softplus(F_assoc(mu_i, e_i, u_i, z_i))     (batch, n, D)
+K_ij  = phi_i . phi_j
+```
+
+One small shared function; the dot product of its output *is* the
+association kernel by construction, not an estimate of one — no
+variance, no "does this converge as `D` grows" question. `D`
+(`assoc_dim`, default 32) is independent of `n_cells` and an order of
+magnitude below the field's `R=512`. No routing coordinate `r`, no
+bandwidth/mass functions, no mean-shift — state stays plain
+`BeliefCellV1 (mu, e, u, z)`, the same state dense/sparse CellV1 already
+use, so (unlike `FieldCellState`) no wrapper dataclass is needed.
+Aggregation reuses the same precision-weighted, scale-stable reduction
+pattern as every prior CellV1 variant (population-wide reductions once,
+each receiver reads them through its own `phi_i`, `O(n_cells * D)`), with
+exact (not anchored-approximate) self-removal since `phi` is learned, not
+an RFF estimate of some other target kernel. `z`'s update is **not** a
+kernel-weighted average of neighbors (the field's own docstring already
+flags that as the wrong move for an identity field, not a numerical
+detail) — a learned, gated function of `(z, local content summary)`,
+same role `(r, r_bar)` played for the field variant.
+
+Global communication (§14) is reused **completely unmodified** — same
+`GlobalSendFunction`/`GlobalNeedFunction`/`GlobalQueryKey`/
+`linear_global_belief_field`/`precision_fusion`/`WriteGateFunction` — per
+the user's explicit instruction to keep the global mechanism and feed it
+this fusion's local output instead of the field's.
+
+### What was found
+
+A single-seed sanity check (`check_association_field.py`, the user's
+explicit "narrow check, not another huge sweep") against
+`field_local_global_t2` (R=512) at matched params: `easy` — field
+R²=0.8152/600 steps/11.9s vs. association R²=0.8069/200 steps/3.24s;
+`very_hard` — field R²=0.8136/2300 steps/80.7s vs. association
+R²=0.8205/900 steps/16.1s. Comparable-or-better accuracy in roughly a
+third the steps and a fifth the wall-clock, on this one seed.
+
+The fuller 3-seed, 4-level convergence sweep
+(`run_complexity_scaling_association.py`, `cellv0.1` vs.
+`association_local_global_t2` only — the field variants are retired from
+active development per that script's own docstring) confirms this isn't
+a single-seed artifact: R² tracks `cellv0.1` within its own seed noise at
+every level (easy 0.7896±0.0124 vs. 0.7880±0.0219; medium 0.8405±0.0071
+vs. 0.8448±0.0073; hard 0.8287±0.0092 vs. 0.8292±0.0096; very_hard
+0.8211±0.0004 vs. 0.8191±0.0052), and **no collapse on any of the 12
+(level, seed) combinations** — `very_hard`'s ±0.0004 is the tightest seed
+variance of any model/level combination recorded in this experiment
+line. Steps-to-convergence is mixed, not uniformly faster than the
+single-seed check suggested: fewer steps than `cellv0.1` at `easy` (967
+vs. 2300), comparable-to-slightly-more at `hard`/`very_hard` (1267 vs.
+967; 1367 vs. 1233) — the "3-9x fewer steps" figure from the single-seed
+check does not hold up unchanged and should not be quoted as the
+headline. Per-step wall-clock is consistently lower than the field
+variant it replaced (e.g. `very_hard`: ~18ms/step vs. ~37ms/step at
+R=512), though the ~2x gap is smaller than `D=32` vs. `R=512`'s ~16x
+feature-count ratio would suggest — fixed costs (global communication,
+write-gate, semantic update) are shared and don't shrink. Full numbers:
+`docs/research_log.md`'s CellV1.4 entry.
+
+### Implementation map
+
+| Module | Contents |
+|---|---|
+| `learned_association.py` | `AssociationFunction`, `learned_local_association_fusion`, `AssociationSemanticUpdateFunction` |
+| `association_dynamics.py` | `AssociationRefinementStep`, `AssociationRefinementCore` |
+| `association_model.py` | `LearnedAssociationField` — encoder → core → decoder, unwrapped (no `r_0` to compute, unlike `FieldEncoder`) |
+
+Tests: `tests/test_learned_association.py` (8 tests), full suite
+274/274. **Not yet done:** an adaptive per-input continue/refine gate
+(`T1` vs. `T2` decided from task loss rather than a fixed `num_steps`) is
+named in the module's own docstring as deliberately deferred ("I would
+not do another huge sweep") — `AssociationRefinementCore` still takes a
+fixed `num_steps`, a known gap against the fuller spec, not a bug.
+
+## 16. Revision history
 
 - 2026-09-01: Proposal captured from a design conversation with the user —
   self-organizing, input-dependent belief graph; no fixed
@@ -683,3 +904,29 @@ only, one step. `evidence`/`uncertainty`'s noisier convergence (vs.
   local density on the exactly-known `K(i,i)=1` rather than any further
   epsilon patching. `field_dynamics.py`/`field_model.py` implemented at
   the user's stated defaults (`R=256`, `T=1`); no experiment run yet.
+- 2026-09-03 (later same day): User asked for CellV1.3's deferred global
+  communication, specified as a reuse of dense CellV1's send/need/
+  query-key design (§5 Part III) via exact linear attention (Katharopoulos
+  et al. 2020), plus a new task (`dynamic_groups_global`, argmax/argmin
+  group-value pairing) built specifically to require it, since the
+  existing spatial-pairing task could be shortcut by a wide local field.
+  Implemented (§14: `global_field.py`, `field_dynamics.py`/`field_model.py`'s
+  `use_global` flag). A real single-seed collapse was found and traced to
+  an unlearned, loud global channel voting from step 0; fixed via a
+  near-off gate-bias init. A *different*, unresolved collapse (local-only
+  field, `very_hard`/seed=0, under the corrected convergence protocol at
+  R=512) remains open. `diagnose_global_collapse.py` was written to
+  isolate the cause of the first collapse; no saved output from it was
+  found in this working tree.
+- 2026-09-03 (later still): User identified that even `R=512` doesn't make
+  CellV1.3's RFF-approximated kernel fully scale-stable (§14's open
+  finding), and specified CellV1.4: stop approximating a chosen similarity
+  function and learn one directly. Implemented (§15:
+  `learned_association.py`, `association_dynamics.py`,
+  `association_model.py`) -- `phi_i = softplus(F_assoc(mu_i,e_i,u_i,z_i))`,
+  `K_ij = phi_i . phi_j`, exact by construction. Global communication
+  (§14) reused unmodified per explicit instruction. A single-seed sanity
+  check against the field variant, then a 3-seed/4-level convergence
+  sweep, found accuracy matching CellV0.1 within seed noise at every
+  level and no collapse across any of 12 (level, seed) combinations --
+  currently the more reliable of the two field-style CellV1 variants.
