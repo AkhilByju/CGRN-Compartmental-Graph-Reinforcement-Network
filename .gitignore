@@ -44,6 +44,11 @@ mlruns/
 *.log
 
 # --- Data (raw/processed experiment outputs are regenerated, not versioned) ---
+# Root results/ dir, and any experiments/<name>/results/ dir (these patterns
+# anchor at the directory containing this .gitignore for the root case, and
+# gitignore's "**/" prefix matches at any depth for the experiment-level case
+# -- both are needed since a mid-string slash without "**/" only matches the
+# repo-root path).
 results/raw/*
 !results/raw/.gitkeep
 results/processed/*
@@ -52,6 +57,14 @@ results/figures/*
 !results/figures/.gitkeep
 results/tables/*
 !results/tables/.gitkeep
+**/results/raw/*
+!**/results/raw/.gitkeep
+**/results/processed/*
+!**/results/processed/.gitkeep
+**/results/figures/*
+!**/results/figures/.gitkeep
+**/results/tables/*
+!**/results/tables/.gitkeep
 
 # Local secrets / environment overrides
 .env
