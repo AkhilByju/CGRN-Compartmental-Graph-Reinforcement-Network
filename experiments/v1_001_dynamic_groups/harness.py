@@ -68,6 +68,7 @@ from torch.utils.data import DataLoader, TensorDataset  # noqa: E402
 
 from src.data.synthetic.classification import make_classification_splits  # noqa: E402
 from src.data.synthetic.dynamic_groups import N_OBJECTS as DEFAULT_N_OBJECTS  # noqa: E402
+from src.data.synthetic.dynamic_groups import make_dynamic_groups_global_splits  # noqa: E402
 from src.data.synthetic.dynamic_groups import make_dynamic_groups_splits  # noqa: E402
 from src.data.synthetic.regression import make_regression_splits  # noqa: E402
 from src.data.synthetic.uncertainty import make_uncertainty_splits  # noqa: E402
@@ -78,6 +79,8 @@ from src.evaluation.regression import mae as mae_metric  # noqa: E402
 from src.evaluation.regression import r_squared  # noqa: E402
 from src.evaluation.regression import rmse as rmse_metric  # noqa: E402
 from src.models.architecture_v0.belief_network import BeliefNetwork  # noqa: E402
+from src.models.architecture_v1.association_model import LearnedAssociationField  # noqa: E402
+from src.models.architecture_v1.field_model import SelfOrganizingRefinementField  # noqa: E402
 from src.models.architecture_v1.lsh import gather_scalar, lookup_value  # noqa: E402
 from src.models.architecture_v1.object_encoder import ObjectSeededEncoder  # noqa: E402
 from src.models.architecture_v1.sparse_model import SparseDynamicBeliefGraph  # noqa: E402
@@ -87,8 +90,52 @@ from src.utilities.config import ExperimentConfig, make_run_id  # noqa: E402
 from src.utilities.device import get_device  # noqa: E402
 from src.utilities.seeding import set_seed  # noqa: E402
 
-TASKS: tuple[str, ...] = ("r2_interaction", "c2_interaction", "u2_heteroscedastic_interaction", "dynamic_groups")
+TASKS: tuple[str, ...] = (
+    "r2_interaction",
+    "c2_interaction",
+    "u2_heteroscedastic_interaction",
+    "dynamic_groups",
+    "dynamic_groups_global",
+)
+
+# Tasks using the per-object `ObjectSeededEncoder` (object_encoder.py) and
+# returning `(x, y, group_id)` splits, not `PopulationEncoder`'s dense
+# `(x, y)`. `dynamic_groups_global` (src.data.synthetic.dynamic_groups)
+# shares `dynamic_groups`' exact object layout/flatten order -- only the
+# label's cross-group pairing criterion differs.
+OBJECT_SEEDED_TASKS: tuple[str, ...] = ("dynamic_groups", "dynamic_groups_global")
 ARCHITECTURES: tuple[str, ...] = ("mlp", "cellv0.1", "cellv1_local", "cellv1_full")
+
+# CellV1.3 (Self-Organizing Refinement Field) comparison -- a separate,
+# additive path (`_build_field_models`/`run_field_task` below), not a
+# replacement for the cellv1_local/cellv1_full comparison above. Kept
+# apart because the field model has no discrete candidate-graph output to
+# feed the cellv1_local/cellv1_full graph-analysis metrics
+# (`_graph_metrics`) -- comparing field_t1/field_t2 is purely on
+# prediction performance, params, and wall-clock, per the user's spec.
+FIELD_ARCHITECTURES: tuple[str, ...] = ("mlp", "cellv0.1", "field_t1", "field_t2")
+FIELD_NUM_FEATURES = 256  # R, the user's stated experimental default
+
+# CellV1.3's global communication field (global_field.py), added on top of
+# the local field -- a separate, additive comparison
+# (_build_global_comparison_models/run_global_field_comparison below),
+# not a replacement for FIELD_ARCHITECTURES/run_field_task above (which
+# stays untouched -- its 3-seed T1-vs-T2 result is already recorded).
+# "Does learned non-local communication improve beyond the already-
+# successful local self-organizing refinement?" -- no mlp in this
+# comparison, matching the user's exact point-18 listing.
+GLOBAL_FIELD_ARCHITECTURES: tuple[str, ...] = ("cellv0.1", "field_t1", "field_t2", "field_local_global_t2")
+GLOBAL_DIM = 16  # d_g, the user's suggested "8 or 16"
+
+# Learned Association Field (association_model.py) -- the user's narrower
+# redesign replacing field_dynamics.py's ORFF-approximated Gaussian local
+# field with an exact, learned low-rank association kernel
+# (learned_association.py). Now "the leading architecture" per the
+# user's own framing; field_t2/field_local_global_t2 above are retired
+# from active development, kept only as the research baseline showing
+# why this redesign was necessary -- not deleted, not modified.
+ASSOCIATION_ARCHITECTURES: tuple[str, ...] = ("cellv0.1", "association_local_global_t2")
+ASSOC_DIM = 32  # D, the user's suggested "16-64," matching learned_association.py's own default
 
 # The three scales the user asked to sweep -- T fixed at 6 for all of them.
 V1_SCALES: dict[str, int] = {"V1-S0": 128, "V1-S1": 256, "V1-S2": 512}
@@ -150,10 +197,9 @@ def _build_splits(
     `dynamic_groups`, which is `(x, y, group_id)` -- `group_id` is never
     fed to a model, only used by `_graph_metrics`/`_save_graph_evolution`.
     `n_objects`/`k_min`/`k_max` only affect `dynamic_groups`."""
-    if task == "dynamic_groups":
-        splits = make_dynamic_groups_splits(
-            n_train, n_val, n_test, seed=seed, n_objects=n_objects, k_min=k_min, k_max=k_max
-        )
+    if task in OBJECT_SEEDED_TASKS:
+        splits_fn = make_dynamic_groups_splits if task == "dynamic_groups" else make_dynamic_groups_global_splits
+        splits = splits_fn(n_train, n_val, n_test, seed=seed, n_objects=n_objects, k_min=k_min, k_max=k_max)
         return splits["train"], splits["val"], splits["test"]
     if task == "u2_heteroscedastic_interaction":
         splits = make_uncertainty_splits(task, n_train, n_val, n_test, seed=seed)
@@ -205,7 +251,7 @@ def _build_models(
     makes a run slow."""
     set_seed(seed)
 
-    encoder_kind = task == "dynamic_groups"
+    encoder_kind = task in OBJECT_SEEDED_TASKS
 
     def make_encoder() -> torch.nn.Module | None:
         if not encoder_kind:
@@ -299,6 +345,104 @@ def _train(
             if step >= steps:
                 break
     return time.perf_counter() - start
+
+
+def _train_until_convergence(
+    model: torch.nn.Module,
+    loss_fn,
+    x_train: torch.Tensor,
+    y_train: torch.Tensor,
+    x_val: torch.Tensor,
+    y_val: torch.Tensor,
+    device: torch.device,
+    seed: int,
+    regression: bool,
+    batch_size: int,
+    lr: float,
+    val_every: int = 100,
+    patience_steps: int = 500,
+    max_steps: int = 5_000,
+) -> dict[str, float | int]:
+    """Early-stopping training loop, replacing `_train`'s fixed step
+    count for the complexity-scaling comparison
+    (`run_complexity_scaling_convergence.py`) -- a 24-object and a
+    192-object problem don't converge on the same optimization timescale
+    (`docs/research_log.md`'s global-collapse diagnostic: the same
+    architecture that looked "collapsed" at a fixed 1500 steps reached
+    0.80-0.82 R^2 given enough steps or a better-resolved field), so
+    comparing architectures at one arbitrary step count confounds
+    capability with convergence speed. Evaluates validation performance
+    every `val_every` steps; stops once `patience_steps` worth of checks
+    pass with no improvement, or `max_steps` is reached. Restores the
+    model to its best-validation state before returning (so the caller's
+    subsequent test-set evaluation reflects the best checkpoint, not
+    wherever training happened to stop) and reports both *when* the best
+    checkpoint was found (steps/wall-clock "to convergence") and the
+    total steps/wall-clock actually spent (best-checkpoint time plus the
+    patience tail) -- the efficiency question the user's protocol is
+    specifically after, not just whether the architecture eventually
+    gets there."""
+    model.to(device)
+    model.train()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    loader = DataLoader(
+        TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True,
+        generator=torch.Generator().manual_seed(seed),
+    )
+    x_val_dev, y_val_dev = x_val.to(device), y_val.to(device)
+
+    best_val = -float("inf")
+    best_step = 0
+    best_wall_clock = 0.0
+    best_state: dict[str, torch.Tensor] | None = None
+    steps_since_improvement = 0
+
+    start = time.perf_counter()
+    step = 0
+    data_iter = iter(loader)
+    while step < max_steps:
+        try:
+            xb, yb = next(data_iter)
+        except StopIteration:
+            data_iter = iter(loader)
+            xb, yb = next(data_iter)
+        xb, yb = xb.to(device), yb.to(device)
+        optimizer.zero_grad()
+        loss = loss_fn(model(xb), yb)
+        loss.backward()
+        optimizer.step()
+        step += 1
+
+        if step % val_every == 0:
+            model.eval()
+            with torch.no_grad():
+                val_pred = model(x_val_dev)
+                val_metric = r_squared(val_pred, y_val_dev) if regression else accuracy_metric(val_pred, y_val_dev)
+            model.train()
+
+            if val_metric > best_val:
+                best_val = val_metric
+                best_step = step
+                best_wall_clock = time.perf_counter() - start
+                best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+                steps_since_improvement = 0
+            else:
+                steps_since_improvement += val_every
+
+            if steps_since_improvement >= patience_steps:
+                break
+
+    total_wall_clock = time.perf_counter() - start
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    return {
+        "steps_to_convergence": best_step,
+        "wall_clock_to_convergence_seconds": best_wall_clock,
+        "total_steps_run": step,
+        "total_wall_clock_seconds": total_wall_clock,
+        "best_val_metric": best_val,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +644,7 @@ def run_task(
     set_seed(seed)
     device = get_device()
     regression = _is_regression(task)
-    is_dynamic_groups = task == "dynamic_groups"
+    is_dynamic_groups = task in OBJECT_SEEDED_TASKS
 
     train_split, val_split, test_split = _build_splits(
         task, seed, n_train, n_val, n_test, n_objects=n_objects, k_min=k_min, k_max=k_max
@@ -610,6 +754,823 @@ def run_task(
             inference_wall_clock_seconds=inference_wall_clock,
             validation_metrics={},
             test_metrics={k: v for k, v in test_metrics.items() if k != "graph_evolution_path"},
+            git_commit=get_git_commit(),
+            checkpoint_path=None,
+        )
+        write_run_record(record, Path(results_dir))
+
+    return results
+
+
+def _build_field_models(
+    task: str,
+    in_features: int,
+    out_features: int,
+    seed: int,
+    n_cells: int = N_CELLS,
+    n_objects: int = DEFAULT_N_OBJECTS,
+    association_dim: int = ASSOCIATION_DIM,
+    routing_dim: int | None = None,
+    num_features: int = FIELD_NUM_FEATURES,
+    hidden_dim: int = CELLV1_HIDDEN_DIM,
+) -> tuple[dict[str, torch.nn.Module], dict[str, int | str]]:
+    """`mlp`/`cellv0.1`, parameter-matched to `field_t2` -- `field_t1` and
+    `field_t2` share the *same* parameter count (they differ only in how
+    many times the one shared step is applied, `docs/architecture_v1.md`
+    §13's "same shared rules" convention -- `num_steps` never adds
+    parameters), so either could serve as the matching target; `field_t2`
+    is used for no reason beyond being the one built first. No change to
+    `field_dynamics.py`/`field_fusion.py`/`field_model.py` math -- this
+    only constructs and sizes the existing model."""
+    routing_dim = routing_dim if routing_dim is not None else association_dim
+    set_seed(seed)
+
+    encoder_kind = task in OBJECT_SEEDED_TASKS
+
+    def make_encoder() -> torch.nn.Module | None:
+        if not encoder_kind:
+            return None
+        return ObjectSeededEncoder(n_objects=n_objects, n_cells=n_cells, association_dim=association_dim)
+
+    field_t2 = SelfOrganizingRefinementField(
+        in_features=in_features,
+        out_features=out_features,
+        n_cells=n_cells,
+        association_dim=association_dim,
+        routing_dim=routing_dim,
+        num_features=num_features,
+        hidden_dim=hidden_dim,
+        num_steps=2,
+        encoder=make_encoder(),
+    )
+    target_params = count_parameters(field_t2)
+
+    field_t1 = SelfOrganizingRefinementField(
+        in_features=in_features,
+        out_features=out_features,
+        n_cells=n_cells,
+        association_dim=association_dim,
+        routing_dim=routing_dim,
+        num_features=num_features,
+        hidden_dim=hidden_dim,
+        num_steps=1,
+        encoder=make_encoder(),
+    )
+
+    hidden_cells = _match_belief_hidden_cells(target_params, in_features, out_features)
+    cellv0_1 = BeliefNetwork(in_features, hidden_cells, out_features, aggregation="scale_stable_precision")
+
+    mlp_hidden_dim = match_hidden_dim(target_params, in_features, out_features, num_hidden_layers=2)
+    mlp = MLPBaseline(in_features, mlp_hidden_dim, out_features, num_hidden_layers=2)
+
+    models = {"mlp": mlp, "cellv0.1": cellv0_1, "field_t1": field_t1, "field_t2": field_t2}
+    sizing = {
+        "field_t2__params": target_params,
+        "field_t1__params": count_parameters(field_t1),
+        "cellv0.1__params": count_parameters(cellv0_1),
+        "cellv0.1__hidden_cells": hidden_cells,
+        "mlp__params": count_parameters(mlp),
+        "mlp__hidden_dim": mlp_hidden_dim,
+    }
+    return models, sizing
+
+
+def run_field_task(
+    task: str,
+    seed: int,
+    steps: int = 1000,
+    batch_size: int = 64,
+    lr: float = 1e-2,
+    n_train: int = 2_000,
+    n_val: int = 500,
+    n_test: int = 500,
+    results_dir: str | Path = "results/raw",
+    n_cells: int = N_CELLS,
+    n_objects: int = DEFAULT_N_OBJECTS,
+    k_min: int = 2,
+    k_max: int = 5,
+    association_dim: int = ASSOCIATION_DIM,
+    routing_dim: int | None = None,
+    num_features: int = FIELD_NUM_FEATURES,
+    hidden_dim: int = CELLV1_HIDDEN_DIM,
+) -> dict:
+    """`mlp`/`cellv0.1`/`field_t1`/`field_t2` on `task`, identical
+    optimizer/steps/batch size, standard prediction metrics only (no
+    graph analysis -- see `FIELD_ARCHITECTURES`'s docstring note above).
+    Writes one `RunRecord` per architecture. Returns a flat dict, results
+    prefixed `<arch>__`."""
+    if task not in TASKS:
+        raise ValueError(f"Unknown task '{task}'. Expected one of {TASKS}.")
+
+    set_seed(seed)
+    device = get_device()
+    regression = _is_regression(task)
+    is_dynamic_groups = task in OBJECT_SEEDED_TASKS
+
+    train_split, val_split, test_split = _build_splits(
+        task, seed, n_train, n_val, n_test, n_objects=n_objects, k_min=k_min, k_max=k_max
+    )
+    if is_dynamic_groups:
+        x_train, y_train, _ = train_split
+        x_val, y_val, _ = val_split
+        x_test, y_test, _ = test_split
+    else:
+        x_train, y_train = train_split
+        x_val, y_val = val_split
+        x_test, y_test = test_split
+        x_train, x_val, x_test = standardize(x_train, x_val, x_test)
+
+    in_features = x_train.shape[1]
+    out_features = 1 if regression else 2
+    loss_fn = torch.nn.MSELoss() if regression else torch.nn.CrossEntropyLoss()
+    headline = "r2" if regression else "accuracy"
+
+    models, sizing = _build_field_models(
+        task,
+        in_features,
+        out_features,
+        seed,
+        n_cells=n_cells,
+        n_objects=n_objects,
+        association_dim=association_dim,
+        routing_dim=routing_dim,
+        num_features=num_features,
+        hidden_dim=hidden_dim,
+    )
+
+    results: dict[str, float | int | str] = {
+        "task": task,
+        "seed": seed,
+        "n_cells": n_cells,
+        "num_features": num_features,
+        "headline": headline,
+        **sizing,
+    }
+
+    x_test_dev, y_test_dev = x_test.to(device), y_test.to(device)
+
+    for arch_name, model in models.items():
+        model.to(device)
+        train_wall_clock = _train(model, loss_fn, x_train, y_train, device, seed, steps, batch_size, lr)
+
+        model.eval()
+        with torch.no_grad():
+            infer_start = time.perf_counter()
+            test_pred = model(x_test_dev)
+            inference_wall_clock = time.perf_counter() - infer_start
+            test_metrics = _compute_metrics(regression, test_pred, y_test_dev)
+
+        for name, value in test_metrics.items():
+            results[f"{arch_name}__{name}"] = value
+        results[f"{arch_name}__train_wall_clock_seconds"] = train_wall_clock
+        results[f"{arch_name}__inference_wall_clock_seconds"] = inference_wall_clock
+
+        refinement_iterations = {"field_t1": 1, "field_t2": 2}.get(arch_name)
+        config = ExperimentConfig(
+            experiment_id="v1_001_dynamic_groups_field",
+            architecture=arch_name,
+            dataset=task,
+            seed=seed,
+            optimizer="adamw",
+            learning_rate=lr,
+            batch_size=batch_size,
+            max_steps=steps,
+            extra={**sizing, "n_cells": n_cells, "association_dim": association_dim, "num_features": num_features},
+        )
+        run_id = make_run_id(config)
+        record = RunRecord(
+            run_id=run_id,
+            experiment_id=config.experiment_id,
+            architecture=arch_name,
+            config=config.to_dict(),
+            parameter_count=count_parameters(model),
+            dataset=task,
+            seed=seed,
+            optimizer=config.optimizer,
+            learning_rate=lr,
+            steps_completed=steps,
+            examples_or_tokens_seen=steps * batch_size,
+            refinement_iterations=refinement_iterations,
+            approximate_flops=None,
+            train_wall_clock_seconds=train_wall_clock,
+            inference_wall_clock_seconds=inference_wall_clock,
+            validation_metrics={},
+            test_metrics=test_metrics,
+            git_commit=get_git_commit(),
+            checkpoint_path=None,
+        )
+        write_run_record(record, Path(results_dir))
+
+    return results
+
+
+def _build_global_comparison_models(
+    task: str,
+    in_features: int,
+    out_features: int,
+    seed: int,
+    n_cells: int = N_CELLS,
+    n_objects: int = DEFAULT_N_OBJECTS,
+    association_dim: int = ASSOCIATION_DIM,
+    routing_dim: int | None = None,
+    num_features: int = FIELD_NUM_FEATURES,
+    hidden_dim: int = CELLV1_HIDDEN_DIM,
+    global_dim: int = GLOBAL_DIM,
+    include_field_t1: bool = True,
+    include_mlp: bool = False,
+) -> tuple[dict[str, torch.nn.Module], dict[str, int | str]]:
+    """`cellv0.1`/`field_t1`/`field_t2`/`field_local_global_t2`[/`mlp`] --
+    point 18's second comparison. `field_local_global_t2` (not
+    `field_t2`) is now the size-defining/matching target: global
+    communication's ~900 new parameters (`GlobalSendFunction`/
+    `GlobalNeedFunction`/`GlobalQueryKey`/the 3-way fuse's own
+    bias+gate, `field_dynamics.py`) are a much bigger fraction of this
+    task's ~3.5k-param field model than of a from-scratch large model, so
+    reusing `field_t2`'s target would leave `field_local_global_t2`
+    meaningfully larger than everything it's compared against.
+    `field_t1`/`field_t2` are reported at their own frozen, unchanged
+    size (smaller by that ~900) -- a real capacity difference, not
+    equalized away.
+
+    `include_field_t1=False` skips building/training `field_t1` entirely
+    (not just omitting it from the returned dict) -- for the complexity-
+    scaling sweep (`run_complexity_scaling.py`), where T1 vs local-T2 was
+    already shown to be ~identical on this task and training a 4th model
+    at every (level, seed) is a real (~25%) chunk of a much larger sweep's
+    wall-clock time. `include_mlp=True` adds a plain `MLPBaseline`
+    (`match_hidden_dim`-sized to the same `target_params`) -- off by
+    default since it wasn't part of the user's original point-18 listing,
+    on for the convergence-based sweep's MLP-vs-CellV0.1 curiosity check
+    (does a conventional feed-forward baseline converge faster *and*
+    score higher than CellV0.1 under the same protocol?)."""
+    routing_dim = routing_dim if routing_dim is not None else association_dim
+    set_seed(seed)
+
+    encoder_kind = task in OBJECT_SEEDED_TASKS
+
+    def make_encoder() -> torch.nn.Module | None:
+        if not encoder_kind:
+            return None
+        return ObjectSeededEncoder(n_objects=n_objects, n_cells=n_cells, association_dim=association_dim)
+
+    field_local_global_t2 = SelfOrganizingRefinementField(
+        in_features=in_features,
+        out_features=out_features,
+        n_cells=n_cells,
+        association_dim=association_dim,
+        routing_dim=routing_dim,
+        num_features=num_features,
+        hidden_dim=hidden_dim,
+        num_steps=2,
+        encoder=make_encoder(),
+        use_global=True,
+        global_dim=global_dim,
+    )
+    target_params = count_parameters(field_local_global_t2)
+
+    field_t2 = SelfOrganizingRefinementField(
+        in_features=in_features,
+        out_features=out_features,
+        n_cells=n_cells,
+        association_dim=association_dim,
+        routing_dim=routing_dim,
+        num_features=num_features,
+        hidden_dim=hidden_dim,
+        num_steps=2,
+        encoder=make_encoder(),
+    )
+    field_t1 = (
+        SelfOrganizingRefinementField(
+            in_features=in_features,
+            out_features=out_features,
+            n_cells=n_cells,
+            association_dim=association_dim,
+            routing_dim=routing_dim,
+            num_features=num_features,
+            hidden_dim=hidden_dim,
+            num_steps=1,
+            encoder=make_encoder(),
+        )
+        if include_field_t1
+        else None
+    )
+
+    hidden_cells = _match_belief_hidden_cells(target_params, in_features, out_features)
+    cellv0_1 = BeliefNetwork(in_features, hidden_cells, out_features, aggregation="scale_stable_precision")
+
+    models = {"cellv0.1": cellv0_1, "field_t2": field_t2, "field_local_global_t2": field_local_global_t2}
+    sizing = {
+        "field_local_global_t2__params": target_params,
+        "field_t2__params": count_parameters(field_t2),
+        "cellv0.1__params": count_parameters(cellv0_1),
+        "cellv0.1__hidden_cells": hidden_cells,
+    }
+    if field_t1 is not None:
+        models["field_t1"] = field_t1
+        sizing["field_t1__params"] = count_parameters(field_t1)
+    if include_mlp:
+        mlp_hidden_dim = match_hidden_dim(target_params, in_features, out_features, num_hidden_layers=2)
+        mlp = MLPBaseline(in_features, mlp_hidden_dim, out_features, num_hidden_layers=2)
+        models["mlp"] = mlp
+        sizing["mlp__params"] = count_parameters(mlp)
+        sizing["mlp__hidden_dim"] = mlp_hidden_dim
+    return models, sizing
+
+
+def run_global_field_comparison(
+    task: str,
+    seed: int,
+    steps: int = 1500,
+    batch_size: int = 64,
+    lr: float = 1e-2,
+    n_train: int = 3_000,
+    n_val: int = 500,
+    n_test: int = 500,
+    results_dir: str | Path = "results/raw",
+    n_cells: int = N_CELLS,
+    n_objects: int = DEFAULT_N_OBJECTS,
+    k_min: int = 2,
+    k_max: int = 5,
+    association_dim: int = ASSOCIATION_DIM,
+    routing_dim: int | None = None,
+    num_features: int = FIELD_NUM_FEATURES,
+    hidden_dim: int = CELLV1_HIDDEN_DIM,
+    global_dim: int = GLOBAL_DIM,
+    include_field_t1: bool = True,
+) -> dict:
+    """`cellv0.1`/`field_t1`/`field_t2`/`field_local_global_t2` on `task`
+    -- point 18's question: "does learned non-local communication improve
+    beyond the already-successful local self-organizing refinement?"
+    Mirrors `run_field_task`'s structure (same optimizer/steps/batch,
+    standard prediction metrics only, one `RunRecord` per architecture),
+    kept as a separate function so stage 1's already-recorded
+    `run_field_task` 3-seed result stays untouched. `include_field_t1`:
+    see `_build_global_comparison_models`'s docstring."""
+    if task not in TASKS:
+        raise ValueError(f"Unknown task '{task}'. Expected one of {TASKS}.")
+
+    set_seed(seed)
+    device = get_device()
+    regression = _is_regression(task)
+    is_dynamic_groups = task in OBJECT_SEEDED_TASKS
+
+    train_split, val_split, test_split = _build_splits(
+        task, seed, n_train, n_val, n_test, n_objects=n_objects, k_min=k_min, k_max=k_max
+    )
+    if is_dynamic_groups:
+        x_train, y_train, _ = train_split
+        x_val, y_val, _ = val_split
+        x_test, y_test, _ = test_split
+    else:
+        x_train, y_train = train_split
+        x_val, y_val = val_split
+        x_test, y_test = test_split
+        x_train, x_val, x_test = standardize(x_train, x_val, x_test)
+
+    in_features = x_train.shape[1]
+    out_features = 1 if regression else 2
+    loss_fn = torch.nn.MSELoss() if regression else torch.nn.CrossEntropyLoss()
+    headline = "r2" if regression else "accuracy"
+
+    models, sizing = _build_global_comparison_models(
+        task,
+        in_features,
+        out_features,
+        seed,
+        n_cells=n_cells,
+        n_objects=n_objects,
+        association_dim=association_dim,
+        routing_dim=routing_dim,
+        num_features=num_features,
+        hidden_dim=hidden_dim,
+        global_dim=global_dim,
+        include_field_t1=include_field_t1,
+    )
+
+    results: dict[str, float | int | str] = {
+        "task": task,
+        "seed": seed,
+        "n_cells": n_cells,
+        "num_features": num_features,
+        "global_dim": global_dim,
+        "headline": headline,
+        **sizing,
+    }
+
+    x_test_dev, y_test_dev = x_test.to(device), y_test.to(device)
+
+    for arch_name, model in models.items():
+        model.to(device)
+        train_wall_clock = _train(model, loss_fn, x_train, y_train, device, seed, steps, batch_size, lr)
+
+        model.eval()
+        with torch.no_grad():
+            infer_start = time.perf_counter()
+            test_pred = model(x_test_dev)
+            inference_wall_clock = time.perf_counter() - infer_start
+            test_metrics = _compute_metrics(regression, test_pred, y_test_dev)
+
+        for name, value in test_metrics.items():
+            results[f"{arch_name}__{name}"] = value
+        results[f"{arch_name}__train_wall_clock_seconds"] = train_wall_clock
+        results[f"{arch_name}__inference_wall_clock_seconds"] = inference_wall_clock
+
+        refinement_iterations = {"field_t1": 1, "field_t2": 2, "field_local_global_t2": 2}.get(arch_name)
+        config = ExperimentConfig(
+            experiment_id="v1_001_dynamic_groups_field_global",
+            architecture=arch_name,
+            dataset=task,
+            seed=seed,
+            optimizer="adamw",
+            learning_rate=lr,
+            batch_size=batch_size,
+            max_steps=steps,
+            extra={
+                **sizing,
+                "n_cells": n_cells,
+                "association_dim": association_dim,
+                "num_features": num_features,
+                "global_dim": global_dim,
+            },
+        )
+        run_id = make_run_id(config)
+        record = RunRecord(
+            run_id=run_id,
+            experiment_id=config.experiment_id,
+            architecture=arch_name,
+            config=config.to_dict(),
+            parameter_count=count_parameters(model),
+            dataset=task,
+            seed=seed,
+            optimizer=config.optimizer,
+            learning_rate=lr,
+            steps_completed=steps,
+            examples_or_tokens_seen=steps * batch_size,
+            refinement_iterations=refinement_iterations,
+            approximate_flops=None,
+            train_wall_clock_seconds=train_wall_clock,
+            inference_wall_clock_seconds=inference_wall_clock,
+            validation_metrics={},
+            test_metrics=test_metrics,
+            git_commit=get_git_commit(),
+            checkpoint_path=None,
+        )
+        write_run_record(record, Path(results_dir))
+
+    return results
+
+
+def run_convergence_field_comparison(
+    task: str,
+    seed: int,
+    batch_size: int = 64,
+    lr: float = 1e-2,
+    n_train: int = 3_000,
+    n_val: int = 500,
+    n_test: int = 500,
+    val_every: int = 100,
+    patience_steps: int = 500,
+    max_steps: int = 5_000,
+    results_dir: str | Path = "results/raw",
+    n_cells: int = N_CELLS,
+    n_objects: int = DEFAULT_N_OBJECTS,
+    k_min: int = 2,
+    k_max: int = 5,
+    association_dim: int = ASSOCIATION_DIM,
+    routing_dim: int | None = None,
+    num_features: int = FIELD_NUM_FEATURES,
+    hidden_dim: int = CELLV1_HIDDEN_DIM,
+    global_dim: int = GLOBAL_DIM,
+    include_mlp: bool = False,
+) -> dict:
+    """`cellv0.1`/`field_t2`/`field_local_global_t2`[/`mlp`] on `task`,
+    trained with early stopping (`_train_until_convergence`) instead of a
+    fixed step count -- the user's protocol for the convergence-based
+    complexity sweep (`run_complexity_scaling_convergence.py`): "stop
+    comparing models at a fixed arbitrary step count... a 24-object
+    problem and a 192-object problem do not converge on the same
+    optimization timescale." No `field_t1` (matching
+    `run_complexity_scaling.py`'s reasoning -- already-shown ~identical
+    to local-T2 on this task). `include_mlp`: see
+    `_build_global_comparison_models`'s docstring. Records, per architecture: best test
+    metric (at the best-validation checkpoint), steps/wall-clock *to*
+    that checkpoint (the efficiency question -- "how much compute did it
+    need to get there"), and total steps/wall-clock actually run
+    (checkpoint time plus the patience tail)."""
+    if task not in TASKS:
+        raise ValueError(f"Unknown task '{task}'. Expected one of {TASKS}.")
+
+    set_seed(seed)
+    device = get_device()
+    regression = _is_regression(task)
+    is_dynamic_groups = task in OBJECT_SEEDED_TASKS
+
+    train_split, val_split, test_split = _build_splits(
+        task, seed, n_train, n_val, n_test, n_objects=n_objects, k_min=k_min, k_max=k_max
+    )
+    if is_dynamic_groups:
+        x_train, y_train, _ = train_split
+        x_val, y_val, _ = val_split
+        x_test, y_test, _ = test_split
+    else:
+        x_train, y_train = train_split
+        x_val, y_val = val_split
+        x_test, y_test = test_split
+        x_train, x_val, x_test = standardize(x_train, x_val, x_test)
+
+    in_features = x_train.shape[1]
+    out_features = 1 if regression else 2
+    loss_fn = torch.nn.MSELoss() if regression else torch.nn.CrossEntropyLoss()
+    headline = "r2" if regression else "accuracy"
+
+    models, sizing = _build_global_comparison_models(
+        task,
+        in_features,
+        out_features,
+        seed,
+        n_cells=n_cells,
+        n_objects=n_objects,
+        association_dim=association_dim,
+        routing_dim=routing_dim,
+        num_features=num_features,
+        hidden_dim=hidden_dim,
+        global_dim=global_dim,
+        include_field_t1=False,
+        include_mlp=include_mlp,
+    )
+
+    results: dict[str, float | int | str] = {
+        "task": task,
+        "seed": seed,
+        "n_cells": n_cells,
+        "num_features": num_features,
+        "global_dim": global_dim,
+        "headline": headline,
+        **sizing,
+    }
+
+    x_test_dev, y_test_dev = x_test.to(device), y_test.to(device)
+
+    for arch_name, model in models.items():
+        model.to(device)
+        convergence = _train_until_convergence(
+            model, loss_fn, x_train, y_train, x_val, y_val, device, seed, regression,
+            batch_size, lr, val_every=val_every, patience_steps=patience_steps, max_steps=max_steps,
+        )
+
+        model.eval()
+        with torch.no_grad():
+            infer_start = time.perf_counter()
+            test_pred = model(x_test_dev)
+            inference_wall_clock = time.perf_counter() - infer_start
+            test_metrics = _compute_metrics(regression, test_pred, y_test_dev)
+
+        for name, value in test_metrics.items():
+            results[f"{arch_name}__{name}"] = value
+        results[f"{arch_name}__inference_wall_clock_seconds"] = inference_wall_clock
+        for name, value in convergence.items():
+            results[f"{arch_name}__{name}"] = value
+
+        config = ExperimentConfig(
+            experiment_id="v1_001_dynamic_groups_field_global_convergence",
+            architecture=arch_name,
+            dataset=task,
+            seed=seed,
+            optimizer="adamw",
+            learning_rate=lr,
+            batch_size=batch_size,
+            max_steps=max_steps,
+            extra={
+                **sizing,
+                "n_cells": n_cells,
+                "association_dim": association_dim,
+                "num_features": num_features,
+                "global_dim": global_dim,
+                "val_every": val_every,
+                "patience_steps": patience_steps,
+                **convergence,
+            },
+        )
+        run_id = make_run_id(config)
+        record = RunRecord(
+            run_id=run_id,
+            experiment_id=config.experiment_id,
+            architecture=arch_name,
+            config=config.to_dict(),
+            parameter_count=count_parameters(model),
+            dataset=task,
+            seed=seed,
+            optimizer=config.optimizer,
+            learning_rate=lr,
+            steps_completed=convergence["total_steps_run"],
+            examples_or_tokens_seen=convergence["total_steps_run"] * batch_size,
+            refinement_iterations={"field_t2": 2, "field_local_global_t2": 2}.get(arch_name),
+            approximate_flops=None,
+            train_wall_clock_seconds=convergence["total_wall_clock_seconds"],
+            inference_wall_clock_seconds=inference_wall_clock,
+            validation_metrics={"best": convergence["best_val_metric"]},
+            test_metrics=test_metrics,
+            git_commit=get_git_commit(),
+            checkpoint_path=None,
+        )
+        write_run_record(record, Path(results_dir))
+
+    return results
+
+
+def _build_association_comparison_models(
+    task: str,
+    in_features: int,
+    out_features: int,
+    seed: int,
+    n_cells: int = N_CELLS,
+    n_objects: int = DEFAULT_N_OBJECTS,
+    association_dim: int = ASSOCIATION_DIM,
+    assoc_dim: int = ASSOC_DIM,
+    hidden_dim: int = CELLV1_HIDDEN_DIM,
+    global_dim: int = GLOBAL_DIM,
+) -> tuple[dict[str, torch.nn.Module], dict[str, int | str]]:
+    """`cellv0.1`/`association_local_global_t2` -- the user's "leading
+    architecture" comparison (`docs/research_log.md`'s learned-
+    association redesign). `association_local_global_t2` is the size-
+    defining/matching target for `cellv0.1`, same convention as
+    `_build_global_comparison_models`. No `field_t1`/`field_t2`/
+    `field_local_global_t2`/`mlp` here -- the ORFF field is retired from
+    active development (kept elsewhere as the research baseline that
+    motivated this redesign, not part of this comparison)."""
+    set_seed(seed)
+
+    encoder_kind = task in OBJECT_SEEDED_TASKS
+
+    def make_encoder() -> torch.nn.Module | None:
+        if not encoder_kind:
+            return None
+        return ObjectSeededEncoder(n_objects=n_objects, n_cells=n_cells, association_dim=association_dim)
+
+    association_local_global_t2 = LearnedAssociationField(
+        in_features=in_features,
+        out_features=out_features,
+        n_cells=n_cells,
+        association_dim=association_dim,
+        assoc_dim=assoc_dim,
+        hidden_dim=hidden_dim,
+        num_steps=2,
+        encoder=make_encoder(),
+        use_global=True,
+        global_dim=global_dim,
+    )
+    target_params = count_parameters(association_local_global_t2)
+
+    hidden_cells = _match_belief_hidden_cells(target_params, in_features, out_features)
+    cellv0_1 = BeliefNetwork(in_features, hidden_cells, out_features, aggregation="scale_stable_precision")
+
+    models = {"cellv0.1": cellv0_1, "association_local_global_t2": association_local_global_t2}
+    sizing = {
+        "association_local_global_t2__params": target_params,
+        "cellv0.1__params": count_parameters(cellv0_1),
+        "cellv0.1__hidden_cells": hidden_cells,
+    }
+    return models, sizing
+
+
+def run_convergence_association_comparison(
+    task: str,
+    seed: int,
+    batch_size: int = 64,
+    lr: float = 1e-2,
+    n_train: int = 3_000,
+    n_val: int = 500,
+    n_test: int = 500,
+    val_every: int = 100,
+    patience_steps: int = 500,
+    max_steps: int = 5_000,
+    results_dir: str | Path = "results/raw",
+    n_cells: int = N_CELLS,
+    n_objects: int = DEFAULT_N_OBJECTS,
+    k_min: int = 2,
+    k_max: int = 5,
+    association_dim: int = ASSOCIATION_DIM,
+    assoc_dim: int = ASSOC_DIM,
+    hidden_dim: int = CELLV1_HIDDEN_DIM,
+    global_dim: int = GLOBAL_DIM,
+) -> dict:
+    """`cellv0.1`/`association_local_global_t2` on `task`, trained with
+    early stopping (`_train_until_convergence`) -- the user's "does
+    dynamically learned organization give something beyond the already-
+    strong BeliefCell baseline" question, over the same
+    easy/medium/hard/very_hard sweep as `run_complexity_scaling_convergence.py`
+    (`run_complexity_scaling_association.py`). Mirrors
+    `run_convergence_field_comparison`'s structure exactly."""
+    if task not in TASKS:
+        raise ValueError(f"Unknown task '{task}'. Expected one of {TASKS}.")
+
+    set_seed(seed)
+    device = get_device()
+    regression = _is_regression(task)
+    is_dynamic_groups = task in OBJECT_SEEDED_TASKS
+
+    train_split, val_split, test_split = _build_splits(
+        task, seed, n_train, n_val, n_test, n_objects=n_objects, k_min=k_min, k_max=k_max
+    )
+    if is_dynamic_groups:
+        x_train, y_train, _ = train_split
+        x_val, y_val, _ = val_split
+        x_test, y_test, _ = test_split
+    else:
+        x_train, y_train = train_split
+        x_val, y_val = val_split
+        x_test, y_test = test_split
+        x_train, x_val, x_test = standardize(x_train, x_val, x_test)
+
+    in_features = x_train.shape[1]
+    out_features = 1 if regression else 2
+    loss_fn = torch.nn.MSELoss() if regression else torch.nn.CrossEntropyLoss()
+    headline = "r2" if regression else "accuracy"
+
+    models, sizing = _build_association_comparison_models(
+        task,
+        in_features,
+        out_features,
+        seed,
+        n_cells=n_cells,
+        n_objects=n_objects,
+        association_dim=association_dim,
+        assoc_dim=assoc_dim,
+        hidden_dim=hidden_dim,
+        global_dim=global_dim,
+    )
+
+    results: dict[str, float | int | str] = {
+        "task": task,
+        "seed": seed,
+        "n_cells": n_cells,
+        "assoc_dim": assoc_dim,
+        "global_dim": global_dim,
+        "headline": headline,
+        **sizing,
+    }
+
+    x_test_dev, y_test_dev = x_test.to(device), y_test.to(device)
+
+    for arch_name, model in models.items():
+        model.to(device)
+        convergence = _train_until_convergence(
+            model, loss_fn, x_train, y_train, x_val, y_val, device, seed, regression,
+            batch_size, lr, val_every=val_every, patience_steps=patience_steps, max_steps=max_steps,
+        )
+
+        model.eval()
+        with torch.no_grad():
+            infer_start = time.perf_counter()
+            test_pred = model(x_test_dev)
+            inference_wall_clock = time.perf_counter() - infer_start
+            test_metrics = _compute_metrics(regression, test_pred, y_test_dev)
+
+        for name, value in test_metrics.items():
+            results[f"{arch_name}__{name}"] = value
+        results[f"{arch_name}__inference_wall_clock_seconds"] = inference_wall_clock
+        for name, value in convergence.items():
+            results[f"{arch_name}__{name}"] = value
+
+        config = ExperimentConfig(
+            experiment_id="v1_001_dynamic_groups_association_convergence",
+            architecture=arch_name,
+            dataset=task,
+            seed=seed,
+            optimizer="adamw",
+            learning_rate=lr,
+            batch_size=batch_size,
+            max_steps=max_steps,
+            extra={
+                **sizing,
+                "n_cells": n_cells,
+                "association_dim": association_dim,
+                "assoc_dim": assoc_dim,
+                "global_dim": global_dim,
+                "val_every": val_every,
+                "patience_steps": patience_steps,
+                **convergence,
+            },
+        )
+        run_id = make_run_id(config)
+        record = RunRecord(
+            run_id=run_id,
+            experiment_id=config.experiment_id,
+            architecture=arch_name,
+            config=config.to_dict(),
+            parameter_count=count_parameters(model),
+            dataset=task,
+            seed=seed,
+            optimizer=config.optimizer,
+            learning_rate=lr,
+            steps_completed=convergence["total_steps_run"],
+            examples_or_tokens_seen=convergence["total_steps_run"] * batch_size,
+            refinement_iterations={"association_local_global_t2": 2}.get(arch_name),
+            approximate_flops=None,
+            train_wall_clock_seconds=convergence["total_wall_clock_seconds"],
+            inference_wall_clock_seconds=inference_wall_clock,
+            validation_metrics={"best": convergence["best_val_metric"]},
+            test_metrics=test_metrics,
             git_commit=get_git_commit(),
             checkpoint_path=None,
         )

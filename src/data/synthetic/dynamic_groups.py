@@ -36,6 +36,13 @@ returned separately -- ground truth for evaluating whether CellV1's
 *discovered* local graph agrees with the true hidden groups
 (`docs/architecture_v1.md` §5's "agreement... local connectivity and the
 true hidden groups"); it is never fed to any model.
+
+`dynamic_groups_global` (below) is the same generative structure with one
+change: the cross-group pairing is by *aggregate value* (`argmax`/
+`argmin` of each group's `h_k`), not by each group's spatial position --
+see its docstring for why that's a sharper test of whether an explicit
+non-local channel earns its keep, versus a similarity-based local field
+that a spatial pairing criterion could partly shortcut.
 """
 
 from __future__ import annotations
@@ -120,6 +127,100 @@ def dynamic_groups(
         group_id[i] = groups
 
     return x.view(n_samples, n_objects * FEATURES_PER_OBJECT), y, group_id
+
+
+def dynamic_groups_global(
+    n_samples: int,
+    seed: int,
+    n_objects: int = N_OBJECTS,
+    k_min: int = 2,
+    k_max: int = 5,
+    noise_std: float = 0.15,
+    value_scale: float = 1.0,
+    beta: float = 1.0,
+    center_bound: float = 1.0,
+    min_center_dist: float = 0.5,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Same generative structure as `dynamic_groups` (per-object
+    `(k1, k2, v)`, hidden groups, `h_k = tanh(sum_{j in group k} v_j)`),
+    with one deliberate change to which two groups' summaries interact:
+
+        y = sum_k h_k + beta * h[argmax_k h_k] * h[argmin_k h_k]
+
+    `dynamic_groups`'s cross term pairs the groups whose *centers* have
+    the smallest/largest `k1` -- a property of each object's own
+    `(k1, k2)`, which a wide-enough local density field can plausibly
+    approximate without any explicit non-local channel (routing space is
+    derived from each object's own encoded features, which already
+    reflect `(k1, k2)`; "am I near the low-k1 edge" is a property nearby
+    cells can help each other estimate). Here the partner pairing is
+    `argmax`/`argmin` of the groups' *aggregate values* `h_k` -- content
+    computed only after every group's local sum exists, uncorrelated with
+    where any group sits in `(k1, k2)`/routing space by construction.
+    Knowing whether your own group is the max/min-`h` group requires
+    comparing your group's aggregate against every other group's, not
+    just discovering who's spatially nearby -- the thing a
+    similarity-based local field can't shortcut and a complementarity-
+    based (query/key) global channel is built for.
+    """
+    g = torch.Generator().manual_seed(seed)
+
+    x = torch.empty(n_samples, n_objects, FEATURES_PER_OBJECT)
+    y = torch.empty(n_samples, 1)
+    group_id = torch.empty(n_samples, n_objects, dtype=torch.long)
+
+    for i in range(n_samples):
+        k = int(torch.randint(k_min, k_max + 1, (1,), generator=g).item())
+        centers = _sample_separated_centers(k, min_center_dist, center_bound, g)
+
+        groups = torch.empty(n_objects, dtype=torch.long)
+        groups[:k] = torch.arange(k)
+        if n_objects > k:
+            groups[k:] = torch.randint(0, k, (n_objects - k,), generator=g)
+        groups = groups[torch.randperm(n_objects, generator=g)]
+
+        semantic = centers[groups] + torch.randn(n_objects, SEMANTIC_DIM, generator=g) * noise_std
+        values = torch.empty(n_objects, 1).uniform_(-value_scale, value_scale, generator=g)
+
+        h = torch.zeros(k)
+        for group in range(k):
+            mask = groups == group
+            h[group] = torch.tanh(values[mask].sum())
+
+        h_max_group = int(torch.argmax(h).item())
+        h_min_group = int(torch.argmin(h).item())
+        target = h.sum() + beta * (h[h_max_group] * h[h_min_group])
+
+        x[i] = torch.cat([semantic, values], dim=-1)
+        y[i, 0] = target
+        group_id[i] = groups
+
+    return x.view(n_samples, n_objects * FEATURES_PER_OBJECT), y, group_id
+
+
+def make_dynamic_groups_global_splits(
+    n_train: int,
+    n_val: int,
+    n_test: int,
+    seed: int,
+    **kwargs,
+) -> dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Like `make_dynamic_groups_splits`, for `dynamic_groups_global`."""
+    n_total = n_train + n_val + n_test
+    x, y, group_id = dynamic_groups_global(n_total, seed=seed, **kwargs)
+    return {
+        "train": (x[:n_train], y[:n_train], group_id[:n_train]),
+        "val": (
+            x[n_train : n_train + n_val],
+            y[n_train : n_train + n_val],
+            group_id[n_train : n_train + n_val],
+        ),
+        "test": (
+            x[n_train + n_val :],
+            y[n_train + n_val :],
+            group_id[n_train + n_val :],
+        ),
+    }
 
 
 def make_dynamic_groups_splits(
