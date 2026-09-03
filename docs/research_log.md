@@ -1544,3 +1544,70 @@ or can reuse the existing shared-function convention via persistent
 per-cell structural addresses), this becomes CellV1.5 proper the same
 way CellV1.1-CellV1.4 each did: a fully specified doc section, then
 implementation.
+
+## 2026-09-03 (later still) — CellV1.5's structural-weight representation resolved: address-derived, not a stored parameter
+
+**Context:** Immediately following the previous entry, the user resolved
+the single open question flagged as having real engineering stakes: how
+`w_ij` is represented, given edges are added and pruned at runtime and
+this codebase has no existing precedent for a parameter tensor that
+changes shape during training.
+
+**Decision:** Every persistent cell gets a learned **structural address**
+`s_i in R^{d_s}` — a fixed, input-independent per-cell identity (an
+`(n_cells, d_s)` parameter table, trained by ordinary backprop, constant
+across every example/batch, explicitly *not* derived from the current
+belief state the way `z` is). For an existing directed edge `(i, j)`:
+`q_i = W_out s_i`, `k_j = W_in s_j` (shared learned linear maps, no
+bias), `w_ij = tanh(q_i . k_j / sqrt(d_s))`. Nothing about `w_ij` is
+stored — only the sparse edge-index list plus non-parameter structural
+metadata (utility, age) persists; `w_ij` is recomputed from `s`/`W_out`/
+`W_in` for whichever edges currently exist, every forward pass.
+
+**Why this resolves the flagged engineering problem:** A literal
+per-edge `nn.Parameter` would need the parameter tensor itself to
+grow/shrink as edges are added/pruned, colliding with both this
+codebase's fixed-shape-parameter convention and the optimizer's
+per-parameter state (Adam moments for a parameter that no longer exists;
+initialization for one that didn't exist a moment ago). Address-derived
+weights sidestep this entirely: growth needs no weight initialization
+scheme (a new edge's `w_ij` is simply the formula evaluated on that
+pair, immediately well-defined by the two cells' existing addresses),
+and pruning is a plain row deletion from the edge-index list (there was
+never a per-edge optimizer slot to reconcile). This is also the same
+"shared function evaluated over the current structure, not a per-pair
+free parameter" convention every other CellV1 mechanism already follows
+(`docs/architecture_v1.md` §2's original rule against `BeliefLayer`-style
+permanent per-pair parameters, now extended from routing to the
+structural graph itself).
+
+**Compute:** project every cell's address once per forward pass
+(`q_all = S W_out^T`, `k_all = S W_in^T`, `O(n_cells * d_s^2)`), then
+gather and dot only for the `E` existing edges (`O(E * d_s)`) — no
+`(n_cells, n_cells)` tensor at any point, the same budget every prior
+CellV1 sparsity mechanism (§11's LSH pools, §15's association kernel)
+already holds itself to.
+
+**Status:** Recorded in `docs/architecture_v1.md` §16 (moved from "open
+questions" into "what's specified"; the revision history's previous
+entry is updated to point here). Six open questions remain: the
+utility-statistic formula, the growth-score formula, the aggregation
+formula's exact domain once neighbors are sparse, edge budget/bootstrap
+topology, the plasticity schedule, and the relationship to existing
+local/global routing (§5, §14). No code written — this is still a
+documentation-only resolution, not an implementation.
+
+**Why:** The address/projection formula, the constraint that structural
+addresses must not depend on current input, and the storage-only-topology
+decision were all the user's explicit specification; recording them is
+not a new architecture decision.
+
+**Follow-up:** Of the six remaining open questions, none has the same
+"blocks even starting to write code" character #3 did — the rest are
+tunable formulas/schedules more in the spirit of CellV1's own §6
+"implementation-choice defaults," except question 6 (relationship to
+existing local/global routing), which is a real scope decision about
+whether CellV1.5 replaces or extends §5/§14. Worth resolving that one
+specifically before implementation starts, since it determines how much
+of the existing dense/sparse/field machinery this variant actually reuses
+versus supersedes.

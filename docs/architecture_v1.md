@@ -901,13 +901,48 @@ or scoring an `(n_cells, n_cells)` structure.
   softplus(F_assoc(mu_i, e_i, u_i, z_i))`, evaluated only for cells with
   an existing structural edge (not the full population), `a_ij(t) =
   phi_i . phi_j` restricted to that edge.
-- **`w_ij`:** persistent, sparse (`O(E)` storage, `E` edges, not
-  `O(n_cells^2)`), trained by ordinary backprop like any other parameter
-  for as long as an edge exists.
+- **`w_ij` — RESOLVED (2026-09-03): implicit, address-derived, never a
+  stored per-edge `Parameter`.** Every persistent cell has a learned
+  **structural address** `s_i in R^{d_s}` — an `(n_cells, d_s)` parameter
+  table, one row per cell slot. Unlike `z`, `s_i` does **not** depend on
+  the current input or belief state: it is a fixed per-cell identity,
+  trained by ordinary backprop, the same for every example/batch —
+  "who this cell structurally is," not "what it currently believes."
+  For an existing directed edge `(i, j)`:
+
+  ```text
+  q_i = W_out s_i,  k_j = W_in s_j      (shared learned linear maps, no bias)
+  w_ij = tanh(q_i . k_j / sqrt(d_s))
+  ```
+
+  Storage is only the sparse edge topology (an `(E, 2)` index list) plus
+  non-parameter structural metadata (utility, age — open question 1
+  below); `w_ij` itself is never stored, only recomputed from
+  `s_i`/`s_j`/`W_out`/`W_in` for whichever edges currently exist, every
+  forward pass — the same "shared function over the current structure,
+  not a per-pair free parameter" convention every other CellV1 mechanism
+  already follows (§2's rule against `BeliefLayer`-style permanent
+  per-pair parameters extends cleanly from routing to the structural
+  graph itself). This is also what resolves the growing/shrinking-
+  parameter-tensor problem the first draft of this section flagged:
+  growth needs no weight initialization scheme (a new edge's `w_ij`
+  is just the formula evaluated on that pair, immediately well-defined),
+  and pruning has no optimizer state to reconcile (there was never a
+  per-edge optimizer slot to begin with) — it's exactly a row deletion
+  from the edge-index list.
+
+  Compute: project every cell's address once per forward pass —
+  `q_all = S W_out^T`, `k_all = S W_in^T`, `O(n_cells * d_s^2)` — then
+  gather `q_i`/`k_j` for the `E` existing edges and dot them, `O(E *
+  d_s)`. No `(n_cells, n_cells)` tensor at any point, matching the same
+  budget §11's LSH candidate search and §15's association kernel already
+  hold themselves to.
 - **Structural plasticity is occasional, not per-step.** Rewiring happens
   at discrete structural-plasticity events during training (a schedule,
-  not every forward pass); between events the graph is fixed and only
-  `w_ij` values and every other parameter train normally.
+  not every forward pass); between events the edge topology is fixed —
+  `s_i`, `W_out`, `W_in`, and every other parameter still train normally
+  every step, so `w_ij` for existing edges keeps changing even without a
+  plasticity event, just not *which* edges exist.
 - **Growth, at a structural-plasticity event:**
   1. Compute every cell's `phi_i` via the existing shared
      `AssociationFunction` (§15) — the *learned* representation, not a
@@ -924,10 +959,13 @@ or scoring an `(n_cells, n_cells)` structure.
   4. Run an *exact* learned growth score only on that small candidate
      pool — combining association compatibility with accumulated
      activity/utility statistics (exact formula: open, see below).
-  5. Add only the highest-scoring proposed edges.
+  5. Add only the highest-scoring proposed edges to the edge-index list —
+     no weight to initialize; `w_ij` is immediately defined by the two
+     cells' current structural addresses (resolved above).
 - **Pruning:** maintain a running per-edge utility statistic (based on
   the edge's contribution to loss/gradient, optionally co-activity);
-  periodically prune persistently low-utility existing edges.
+  periodically remove persistently low-utility edges from the edge-index
+  list (resolved above: nothing else to clean up).
 - **Explicit constraints from the user, verbatim in spirit:** never
   materialize a dense `(n_cells, n_cells)` matrix or parameter anywhere;
   no fixed number of groups; no permanently designated local/global
@@ -947,34 +985,20 @@ or scoring an `(n_cells, n_cells)` structure.
    one score for ranking candidates — a fixed combination (e.g. product,
    sum) or a small shared learned function in the style of `F_need`/
    `F_offer` (§5 Part III)?
-3. **`w_ij`'s parameterization.** This is the one with real engineering
-   stakes: a literal free scalar `nn.Parameter` per currently-existing
-   edge needs the parameter *tensor itself* to grow/shrink as edges are
-   added/pruned — unusual for this codebase's convention of fixed-shape
-   parameters and shared functions, and it interacts with the optimizer
-   state (Adam moments for a pruned parameter; init for a newly grown
-   one). The alternative: a small **persistent per-cell "structural
-   address" embedding** (fixed-size, always exists, trained like any
-   other parameter) with `w_ij = g(addr_i, addr_j)` computed by a shared
-   function only for existing edges — sidesteps dynamic parameter
-   allocation entirely, closer to how every other CellV1 mechanism
-   avoids per-pair free parameters (§2: "no permanent per-pair connection
-   parameters," CellV0's `BeliefLayer` explicitly named as the thing
-   CellV1 moved away from). Not decided.
-4. **Aggregation formula.** Does `learned_local_association_fusion`
+3. **Aggregation formula.** Does `learned_local_association_fusion`
    (§15) carry over unchanged, just with its sums restricted to each
    cell's structural neighbor set instead of the whole population (same
    math, smaller domain), or does `c_ij(t)` change the fusion formula
    itself?
-5. **Edge budget and bootstrap topology.** Target average degree `k`
+4. **Edge budget and bootstrap topology.** Target average degree `k`
    (analogous to §11's `pool_size`, §13's `R`), and what a freshly
    encoded cell population's structural graph looks like *before* the
    first plasticity event — empty (bootstrapped entirely by early growth
    events) or seeded with one initial growth pass before training starts?
-6. **Plasticity schedule.** What "occasionally" means concretely (every
+5. **Plasticity schedule.** What "occasionally" means concretely (every
    `K` optimizer steps? every `K` refinement steps `T`? epoch
    boundaries?), and how many edges are added/pruned per event.
-7. **Relationship to existing local/global routing (§5 Parts I & III)
+6. **Relationship to existing local/global routing (§5 Parts I & III)
    and the global field (§14).** The user's original framing suggested
    local-vs-global should simply fall out of short- vs. long-range edges
    in *one* substrate, not a separate mechanism — does this proposal
@@ -1093,3 +1117,18 @@ decision, not a per-step routing decision.
   formula's exact domain, edge budget/bootstrap topology, plasticity
   schedule, and the relationship to existing local/global routing). No
   code written.
+- 2026-09-03 (later still): User resolved §16's most consequential open
+  question -- `w_ij`'s parameterization -- with a full formula: every
+  cell gets a persistent, input-independent learned structural address
+  `s_i`, and `w_ij = tanh((W_out s_i) . (W_in s_j) / sqrt(d_s))` for an
+  existing edge, computed on demand rather than stored. Only the sparse
+  edge-index list plus non-parameter metadata (utility, age) persists;
+  there is no per-edge `Parameter`, so growth needs no weight
+  initialization and pruning is a plain row deletion -- the earlier
+  concern about a growing/shrinking parameter tensor colliding with
+  optimizer state doesn't arise. `O(n_cells * d_s^2 + E * d_s)`, no
+  `(n_cells, n_cells)` tensor at any point. Recorded in §16's "What's
+  specified" (moved out of open questions); six questions remain open
+  (utility/growth-score formulas, aggregation domain, edge budget/
+  bootstrap topology, plasticity schedule, relationship to existing
+  local/global routing). Still no code written.
