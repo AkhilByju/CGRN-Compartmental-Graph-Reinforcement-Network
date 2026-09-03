@@ -25,6 +25,20 @@ computational unit — has not been mathematically specified.** Until
 computation, integration rule, update rule, parameter count), the following
 is true:
 
+**Exception — CellV1 / `docs/architecture_v1.md`:** on 2026-09-02 the user
+specified, in full mathematical detail and across two conversation turns, a
+second architecture line — a self-organizing "Dynamic Belief Graph" with no
+fixed layers/compartments — and explicitly asked for it to be implemented.
+It is implemented, in `src/models/architecture_v1/`. The dynamic-graph
+routing / fast contextual association carve-out in the MUST-NOT list below
+does not apply to what's already built there; it was the user's own
+specification, not agent-invented. It **does** still apply to any *further*
+change to that mechanism the user hasn't specified — see
+`docs/architecture_v1.md`'s own revision history and its two remaining
+implementation-choice defaults (encoder/decoder) before assuming something
+about V1 is settled. Everything else in this section still governs the
+(separate, still-unspecified-beyond-CellV0) `architecture_v0.md` line.
+
 ### An agent working in this repo MAY:
 - Edit/extend documentation in `docs/`.
 - Add or refine experiment folders under `experiments/`.
@@ -77,7 +91,8 @@ questions.
 | Doc | Contents |
 |---|---|
 | `docs/research_thesis.md` | Objective, philosophy, why this isn't "Transformers are bad," the biological-neuron clarification, what must NOT change initially (isolation of variables) |
-| `docs/architecture_v0.md` | The architecture design space (compartmental cells, layers→persistent substrate, iterative refinement, graph/cluster organization, fixed-before-dynamic graph, fast associations, latent world-state) — **currently unspecified**, framed as open design questions |
+| `docs/architecture_v0.md` | CellV0: state SPECIFIED, five aggregation candidates implemented (none chosen), run through a **fixed** graph — remaining sections (layers→persistent substrate, graph/cluster organization, fast associations, latent world-state) still `[OPEN]` |
+| `docs/architecture_v1.md` | **Specified and implemented** (`src/models/architecture_v1/`). The dynamic/self-organizing graph structure (`docs/architecture_v0.md` §3–4's open questions, resolved): a persistent cell population with input-dependent local grouping and salience-driven global routing, `CellV1 = (mu, e, u, z)`. Two glue-code pieces (encode/decode) are implementation-choice defaults, not user-specified — flagged in the doc and in `encoder.py`/`decoder.py`. §11: **CellV1.1**, an LSH-based sparse-routing variant (`O(n_cells log n_cells)`-ish, not `O(n_cells^2)`) of the identical cell/update math — dense (§1–§10) kept as "CellV1 Dense Reference," unmodified |
 | `docs/hypotheses.md` | H1–H6 falsifiable hypotheses, CellV0 research questions Q1–Q6, what counts as a positive/mixed/negative result |
 | `docs/benchmark_plan.md` | Three evaluation tracks (Classical ML / Classification / Reasoning-World-Language), the 7-level benchmark ladder, sample- and parameter- and compute-efficiency protocols |
 | `docs/experiment_protocol.md` | The 001–013 experiment sequence, and the exact metadata every run must record |

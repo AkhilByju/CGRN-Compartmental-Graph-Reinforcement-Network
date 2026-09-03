@@ -821,3 +821,474 @@ remain untested at any scale.
 python experiments/004_cellv0_scaling/run_004a.py --aggregation scale_stable_precision
 python experiments/004_cellv0_scaling/run_004b.py --aggregation scale_stable_precision
 ```
+
+## 2026-09-01 — Architecture V1 proposed: a self-organizing, input-dependent belief graph (not finalized)
+
+**Context:** Discussion of what "graph/cluster organization" (§3) and
+"fast dynamic association" (§4) in `docs/architecture_v0.md` — both marked
+`[OPEN]` since that document's first draft — should actually look like,
+beyond a fixed cluster topology.
+
+**Proposal (not a decision):** Replace the fixed layer/cluster structure
+entirely with a single persistent pool of `BeliefCell`s whose local
+groupings and long-range communication are recomputed every refinement
+step from the cells' current states, rather than fixed at design time.
+Local "regions" are emergent dense areas of an association graph, not a
+`num_clusters` hyperparameter; a small, input-dependent subset of cells
+dynamically mediates communication between regions based on salience
+(evidence/uncertainty/disagreement), not a fixed set of "global" units.
+Also identifies a gap in the current primitive: `(mu, e, u)` alone can't
+support meaningful dynamic grouping (similar `mu` doesn't imply related
+content), motivating a proposed fourth cell field `k` (association/key
+vector) — `CellV1 = (mu, e, u, k)`.
+
+**Why:** Everything tested in Experiments 002–004 uses the same fixed
+wiring for every input. This direction makes the wiring itself a function
+of the input and the evolving cell states — closer to the "persistent
+computational substrate" framing in `docs/research_thesis.md` §8 than the
+fixed-graph approach `docs/architecture_v0.md` §3 deliberately started
+with.
+
+**Status:** Written up in full as `docs/architecture_v1.md`, marked
+**PROPOSED, NOT FINALIZED**. Eleven open questions remain (dimensionality
+of `k`, the association/similarity function, neighbor-selection rule,
+global-routing salience criterion and mechanism, `N`/`T`, whether `k`
+itself evolves, the decode step, initialization, and how to stage this
+relative to "isolation of variables" given it's a larger jump than any
+single CellV0 change so far). Per `CLAUDE.md` §2, no dynamic-graph routing,
+association, or `BeliefCell` state changes are implemented from this —
+awaiting further specifics from the user.
+
+**Follow-up:** User will provide more detail on the open questions in
+`docs/architecture_v1.md` §6 before any of this moves toward
+implementation.
+
+## 2026-09-02 — CellV1 fully specified and implemented: Dynamic Belief Graph
+
+**Context:** Follow-up to 2026-09-01's Architecture V1 proposal. User did a
+literature search (DGCNN, Routing Transformer, Slot Attention, capsule
+routing, Growing Neural Gas, RIMs, Global Workspace models -- full list and
+citations in `docs/architecture_v1.md` §0) and returned with a fully
+specified CellV1 synthesis, then explicitly asked for it to be
+implemented.
+
+**Decision / finding:** Implemented in `src/models/architecture_v1/`
+exactly as specified: `BeliefCellV1 = (mu, e, u, z)` (`z` renamed from the
+prior turn's `k`); `LocalAssociation` (learned semantic-distance metric +
+`sparsemax`-with-null-option + mutual `sqrt(a_ij * a_ji)`); `GlobalRouting`
+(directed query/key compatibility gated by learned `need`/`offer`
+functions and penalized by existing local edges); belief fusion at every
+stage (local, global, and the final self/local/global fuse) reuses
+Method E / "CellV0.1"'s exact formula
+(`src.models.architecture_v0.integration._scale_stable_precision_fusion`),
+reproduced in a new `fusion.py::precision_fusion` rather than imported
+because V1 additionally needs the returned content-weights `alpha` for the
+semantic-address update; the semantic address itself updates via a small
+shared MLP and stays L2-normalized. One shared step module is applied `T`
+times (default 6), not `T` independently-parameterized layers.
+
+Two pieces were never specified by the user because they're glue code any
+implementation needs regardless of the belief mechanism -- how raw
+features become the initial 128-cell population, and how a
+variable-topology population reads out to a fixed-size prediction. Chosen
+defaults (documented as implementation choices, not specified formulas, in
+`docs/architecture_v1.md` §6): a learned linear projection to
+`(mu, z)` with `e = u = 1` for initialization (mirroring CellV0's
+`from_observed_features`), and precision-weighted pooling of `(mu, z)`
+across all cells into one linear head for decoding. `sparsemax` (the
+alpha=2 member of the entmax family the user referenced) was chosen over
+general alpha-entmax for a dependency-free closed form.
+
+**A real bug caught before it reached any experiment.** `sqrt(a_ij *
+a_ji)` (the mutual-local-association step) has an infinite gradient
+exactly at `a_ij * a_ji == 0` -- and `sparsemax` produces exact zeros *by
+design*, so on the very first backward pass every parameter in the model
+got a `nan`/`inf` gradient (confirmed via a smoke test before the test
+suite was written: `pred, cells = model.forward_with_cells(x);
+loss.backward()` produced `nan` grads on all 28 named parameters). Fixed
+with a shifted, gradient-safe sqrt (`routing.py::_safe_sqrt`, `sqrt(x +
+eps) - sqrt(eps)`) that keeps exact-zero *values* (true sparsity is
+preserved, unlike plain `sqrt(x + eps)`, which leaves a small nonzero
+floor on every "zero" entry) while keeping the gradient finite everywhere.
+Verified post-fix: full forward+backward on the default-scale
+configuration (`n_cells=128`, `association_dim=8`, `num_steps=6`,
+`batch=32`) produces finite gradients on every parameter, and 20 AdamW
+steps monotonically decrease loss with no divergence. Separately verified
+`LocalAssociation` produces a genuinely sparse (86.5% exact zeros at
+`n=20`, random init), symmetric, zero-diagonal graph, and `GlobalRouting`
+produces a sparse, zero-diagonal, *directed* (not symmetric) graph -- both
+match the specified formulas' intended qualitative behavior.
+
+**Why:** The user's spec resolved essentially every open question
+`docs/architecture_v1.md` originally listed with concrete math grounded in
+a literature search, and explicitly asked for implementation -- this is
+squarely a user-specified research decision being implemented, not an
+agent-invented one (`CLAUDE.md` §2's carve-out for CellV1, added to
+`CLAUDE.md` §2 itself alongside this entry).
+
+**Status:** Implemented and unit-tested (`tests/test_belief_cell_v1.py`,
+`tests/test_sparsemax.py`, `tests/test_routing_v1.py`,
+`tests/test_fusion_v1.py`, `tests/test_dynamics_v1.py`,
+`tests/test_model_v1.py` -- 37 tests, all passing; full suite 173/173).
+Tests check shape/invariant/gradient-finiteness properties, not
+performance -- **no experiment has been run.** `docs/architecture_v1.md`
+§9 flags an open staging question (isolating the local-only hypothesis
+from the global-routing hypothesis) that should be decided before the
+first CellV1 experiment is scoped, since this is a larger simultaneous
+change than any single CellV0 iteration so far.
+
+**Follow-up:** No experiment number/config exists yet for CellV1 --
+next step is scoping one (docs/experiment_protocol.md doesn't yet have a
+CellV1 entry) and deciding the §9 staging question first.
+
+## 2026-09-02 — v1_001_dynamic_groups scoped and implemented: one experiment, four architectures, four tasks
+
+**Context:** User specified the first real CellV1 experiment directly,
+answering §9's staging question by putting `cellv1_local` (dynamic local
+graph, no global routing) and `cellv1_full` (local + global) in the same
+run alongside `mlp` and `cellv0.1`, rather than as separate follow-ups.
+Also flagged an architectural concern before spending compute: the dense
+`PopulationEncoder` lets every cell see the whole input immediately, which
+can bypass the local-then-global organization CellV1 is meant to study.
+
+**Decision / finding:** Implemented as `experiments/v1_001_dynamic_groups/`.
+New pieces:
+
+- `src/data/synthetic/dynamic_groups.py` -- a synthetic task designed
+  specifically around the hypothesis: 24 objects per example, each
+  `(k1, k2, v)`, clustered around `K in {2..5}` hidden centers never
+  labeled to the model; target requires both a per-group local summary
+  (`h_k = tanh(sum v_j)`) and a cross-group global term
+  (`h_left * h_right`, the groups with min/max center x-coordinate) --
+  unsolvable by independent per-object processing or fixed compartments,
+  since the correct grouping changes every example.
+- `src/models/architecture_v1/object_encoder.py::ObjectSeededEncoder` --
+  the structured input adapter the user asked for: each of the first 24
+  cells is seeded one-to-one from one object (`mu = v`, `z = F_seed(k1,
+  k2)`), the rest start neutral (low evidence, high uncertainty, a
+  learned shared "empty" `z`) and are available to be recruited during
+  refinement, with no special recruitment machinery. `PopulationEncoder`
+  (the dense adapter) is untouched and stays the default for R2/C2/U2.
+- `DynamicBeliefGraphStep`/`SemanticUpdateFunction`
+  (`src/models/architecture_v1/dynamics.py`,
+  `shared_functions.py`) gained `use_global_routing: bool`. `False`
+  constructs no global-routing/need/offer modules at all -- a real
+  ablation (fewer parameters), not a full model with its global output
+  suppressed. `DynamicBeliefGraphStep`/`Core`/`DynamicBeliefGraph` gained
+  `forward_with_graphs`, returning the per-step `(a_local, a_global)`
+  association matrices for the graph-analysis metrics and the
+  graph-evolution artifact (`harness.py::_save_graph_evolution`) the user
+  specifically asked to save (up to 100 held-out examples, every step) for
+  later qualitative inspection.
+- `experiments/v1_001_dynamic_groups/harness.py` -- parameter-matches
+  `mlp`/`cellv0.1` to `cellv1_full`'s actual parameter count (`cellv1_local`
+  reported unmatched, honestly smaller); trains all four with identical
+  optimizer/steps/batch size; computes the graph-analysis metrics the user
+  asked for (local sparsity, local-graph change over `T`, AUROC of
+  local-association strength vs. true group membership, fraction of
+  global edges crossing true groups) and nothing beyond that.
+
+**Naming collision, resolved without asking:** the user called this
+"Experiment 005," but `005` already means `experiments/005_recurrence/`
+in `docs/experiment_protocol.md`'s numbered sequence -- an unrelated,
+CellV0-line hypothesis (H2). Filed as `v1_001_dynamic_groups` instead,
+under a new "CellV1 experiment track" section in
+`docs/experiment_protocol.md` (its own `v1_NNN` numbering, independent of
+001-013) and `CLAUDE.md` §2's CellV1 exception -- flagged clearly to the
+user rather than silently overloading `005`'s meaning.
+
+**Why:** Every mechanism-level choice here was the user's -- the four-arm
+comparison, the dataset's local/global target structure, the object-seeded
+initialization, exactly which graph metrics to record. The ablation-flag
+and graph-introspection plumbing needed to run that comparison are
+implementation of the user's specified experiment, not new architecture
+math (`CLAUDE.md` §2's CellV1 exception).
+
+**Status:** Implemented and smoke-tested at tiny scale (`n_cells=30`,
+`num_steps=2`, a few training steps) -- runs end to end, trains all four
+architectures, writes `RunRecord`s, and produces a loadable graph-evolution
+`.npz` with sane shapes/values (e.g. `local_group_agreement_auroc` above
+0.5 even at this untrained toy scale, since the seeded `z`'s already carry
+the raw semantic coordinates). Full test suite 192/192 (19 new tests:
+`tests/test_dynamic_groups_data.py`, `tests/test_object_encoder.py`,
+`tests/test_local_global_ablation.py`). **Not run at the real
+`n_cells=128`/`num_steps=6` scale** -- a CPU timing check put `cellv1_full`
+training at roughly 1s/step there, so the default single-seed, four-task
+run is a multi-hour CPU commitment (documented in the experiment README);
+deferred pending the user's go-ahead on scale/seeds rather than launched
+unilaterally.
+
+**Follow-up:** Decide run scale (steps/n_train/seeds) and launch
+`run_v1_001.py`, or reduce for a faster first low-fidelity pass. Per the
+user's spec, the result should determine what to work on next (association/
+`z`, global communication, cell update/readout, or a sparse
+implementation) -- not trigger an immediate CellV1 rewrite regardless of
+outcome.
+
+## 2026-09-02 (later same day) — CellV1.1: LSH-based sparse routing, dense kept as reference
+
+**Context:** Before spending compute on `v1_001`, user identified that
+dense CellV1's `O(n_cells^2)` local/global association is a scaling dead
+end for an architecture whose whole point is eventually supporting large
+cell populations -- "even if it wins at N=30 or N=128, we've built
+ourselves into a scaling dead end." Specified CellV1.1: keep the cell
+state and every piece of math exactly as-is, replace only *how a cell
+finds candidates worth scoring*, grounded in Reformer (LSH attention,
+`O(n log n)`) and Routing Transformer (online-clustering attention,
+`O(n^1.5)`) as precedent -- explicitly preferring the Reformer end of that
+spectrum over accepting `O(n^1.5)`.
+
+**Decision / finding:** Implemented in
+`src/models/architecture_v1/{lsh,sparse_routing,sparse_dynamics,sparse_model}.py`.
+Fixed (not learned) random-hyperplane hashes turn `z` (local) or `q`/`k`
+(global) into bucket ids; cells are sorted by bucket id once per hash
+round (`O(n_cells log n_cells)`), and `torch.searchsorted` finds where
+each query's own bucket id would insert into that sorted array -- this
+works for the *asymmetric* global case (`q != k`) as well as the
+symmetric local case, unlike Reformer's original chunk-position trick,
+which assumes query=key. A small window of the sorted order becomes the
+candidate pool; the *same* semantic-distance/query-key formulas from the
+dense version then run only on that `O(pool_size)` pool
+(`sparsemax`, mutual `sqrt(a_ij * a_ji)` included -- mutuality is checked
+via `lsh.gather_rows`, looking inside candidate `j`'s own small candidate
+row for `i`, rather than a dense lookup). No `(n_cells, n_cells)` tensor
+is ever constructed -- a masked dense tensor was explicitly rejected as
+not actually saving anything.
+
+**Correctness, not just "looks reasonable":** with the candidate pool
+configured to cover every cell (one hash round, `chunk_size == n_cells`),
+`SparseDynamicBeliefGraphStep` and the dense `DynamicBeliefGraphStep`,
+given identical weights, produce numerically identical output up to
+float32 rounding (`tests/test_sparse_dense_consistency.py`; `~6e-8` max
+`mu` difference, exactly `0` on evidence/uncertainty/z, confirmed both
+single-step and chained over 3 steps, both ablation arms). This is the
+purpose of keeping dense in the repo unmodified as "CellV1 Dense
+Reference" (`docs/architecture_v1.md` §11) -- a correctness anchor, not
+something to run the real experiment with.
+
+**Measured speedup, not just asserted complexity:** CPU, `batch=16`,
+`T=6`, `hidden_dim=32`. Dense roughly quadruples per doubling of
+`n_cells` (matching `O(n^2)`); sparse grows far more slowly:
+
+    n_cells=128: dense 351.0 ms/step, sparse 163.5 ms/step (2.15x)
+    n_cells=256: dense 1307.7 ms/step, sparse 287.9 ms/step (4.54x)
+    n_cells=512: dense 6903.3 ms/step, sparse 575.2 ms/step (12.00x)
+
+The speedup widens with scale, not a fixed constant factor -- the
+complexity argument, not just the mechanism, is empirically validated.
+
+**Why:** Every piece of this was the user's specification (which prior
+architecture to draw on, which end of the complexity spectrum to target,
+that the cell/update math must not change) -- implementing the indexing
+plumbing to realize that spec is not a new architectural decision
+(`CLAUDE.md` §2's CellV1 exception).
+
+**Status:** Implemented and tested (`tests/test_lsh.py`,
+`tests/test_sparse_routing.py`, `tests/test_sparse_dynamics.py`,
+`tests/test_sparse_model.py`, `tests/test_sparse_dense_consistency.py` --
+31 tests; full suite 223/223). Hash/chunk-size/window defaults
+(`num_hashes=2`, `bits=6`, `chunk_size_local=10`, `chunk_size_global=4`,
+`window=0`) are reasonable, matching the user's suggested orders of
+magnitude -- not tuned, no experiment run yet.
+
+**Follow-up:** `experiments/v1_001_dynamic_groups/harness.py` still builds
+the dense `DynamicBeliefGraph`. Switching it to
+`SparseDynamicBeliefGraph` -- and whether/how far to push `n_cells` up
+(user suggested 128 -> 256 -> 512 -> 1,024) now that it's actually
+tractable -- is an open decision, not made here.
+
+## 2026-09-02 (later still) — v1_001 rewired to CellV1.1; scale sweep added
+
+**Context:** User confirmed CellV1.1 (sparse) is now the version worth
+experimenting with, dense staying only as the correctness reference, and
+asked for `v1_001_dynamic_groups` rewired to it with a 128/256/512-cell
+scale sweep (`T=6` fixed), `dynamic_groups` run first.
+
+**Decision / finding:** `harness.py` now builds `SparseDynamicBeliefGraph`
+exclusively; `mlp`/`cellv0.1` are re-parameter-matched to `cellv1_full`'s
+actual count at whichever `n_cells` is running (`V1_SCALES = {"V1-S0":
+128, "V1-S1": 256, "V1-S2": 512}`). Also threaded `n_objects`/`k_min`/
+`k_max` all the way through (`_build_splits`, the `ObjectSeededEncoder`
+construction, both graph-metric functions) rather than the hardcoded
+`N_OBJECTS` import the original version used -- `dynamic_groups()` already
+accepted these, but the harness didn't expose them, so a higher-complexity
+run later (48/96 objects, more groups, per the user's suggestion) needs no
+code changes now.
+
+Graph-analysis metrics needed a real rework, not just a model swap:
+CellV1.1's routing returns gathered `(candidate_idx, weights)` pairs, and
+a receiver's pool membership can differ *entirely* between steps (the LSH
+hash depends on `z`, which changes every step) -- so "how much did the
+local graph change" and "does this edge agree with the true group" can't
+be computed positionally the way the dense `(n_cells, n_cells)` version
+could. Rewritten using `lsh.lookup_value`/`gather_scalar` for
+identity-aware comparison (`harness.py::_sparse_change`,
+`_sparse_group_agreement_auroc`, `_sparse_global_cross_group_fraction`).
+`_save_graph_evolution`'s `.npz` payload now includes `local_candidate_idx`/
+`global_candidate_idx` alongside the weights -- without them the saved
+sparse graphs are uninterpretable.
+
+**Why:** Model choice, scale sweep, and metric set were all specified by
+the user; the graph-metric rework is implementation necessity (CellV1.1's
+own output shape), not a new research decision.
+
+**Status:** Rewired and smoke-tested (2 tasks, 2 seeds, `n_cells=30`,
+tiny steps) end to end via the real CLI -- trains, evaluates, saves a
+correctly-shaped graph-evolution `.npz`. Full test suite still 223/223
+(no `src/` files changed, only the experiment harness). Measured real
+per-step cost at each scale (CPU, `batch_size=64`, `dynamic_groups`):
+128 cells 168/127 ms (full/local), 256 cells 336/262 ms, 512 cells
+861/680 ms -- used to give the user an honest wall-clock estimate
+(~3 hours for the full `dynamic_groups`, 3-scale, 3-seed run at
+`--steps 1500 --n-train 3000`) rather than a guess. **Not run at real
+scale** -- deferred to the user's own command, per their request.
+
+**Follow-up:** Run the real `dynamic_groups` sweep; if V1-S2 (512 cells)
+shows something useful, consider 1,024 next (user: not before). The
+easy/medium/hard `n_objects`/group-count variants stay unused until after
+this first pass, per the user's explicit sequencing.
+
+## 2026-09-02 (later still) — CellV1 flatlines; diagnosed to a state-collapse issue, not routing; fixed with a learned write gate (CellV1.2)
+
+**Context:** User ran `v1_001_dynamic_groups` (`dynamic_groups`, V1-S0/S1,
+2 seeds, 1500 steps) before this log entry existed to record it. Result:
+`mlp` R² 0.61-0.68, `cellv0.1` R² 0.74-0.77, `cellv1_local`/`cellv1_full`
+R² 0.00-0.03 -- at a matched parameter count, so not simply "V1 has fewer
+parameters." User called it decisive on its own and asked for one targeted
+isolation diagnostic rather than more scale sweeping: dense CellV1
+(zero LSH) vs. sparse, same task/scale/seed, recording *train* R² as well
+as test R², to fork between (a) LSH routing destroying the signal, (b)
+the architecture/training setup itself, (c) generalization, or (d)
+optimization/signal-propagation.
+
+**Decision / finding:** `experiments/v1_001_dynamic_groups/diagnose_v1_learning.py`
+(new, standalone -- not wired into the RunRecord machinery, a quick
+diagnostic not a tracked experiment). `dense` (CellV1 Dense Reference,
+`docs/architecture_v1.md` §7) on `dynamic_groups`/V1-S0/seed 0/400 steps:
+train R² = 0.0164, test R² = 0.0079 -- essentially identical failure to
+sparse, and failing on the *training set itself*. This ruled out both
+LSH-specific explanations (dense uses none) and generalization/overfitting
+(train fails too) in one run, pointing straight at the core recurrent
+update.
+
+Caught and fixed a real bug in the diagnostic script itself while getting
+this result: running evaluation unbatched (3000 training examples in one
+forward pass) crashed with `RuntimeError: Invalid buffer size: 46.88 GiB`
+on the `full_pool_sparse` variant -- `sparse_routing.py`'s `gather_rows`
+intermediate is `O(batch * n_cells * pool^2)`, and with the diagnostic's
+"pool covers everyone" config (`pool == n_cells`) that's effectively
+`O(batch * n_cells^3)`, fine at training's `batch_size=64`, not at 3000
+examples in one shot. Fixed by chunking the eval forward pass
+(`_batched_predict`); not a bug in the sparse routing itself, a bug in
+how the diagnostic evaluated it.
+
+**Diagnosis (user, before rerunning anything further):** CellV1's
+recurrent update fully overwrites every cell's `(mu, e, u)` with the
+fused self+local+global proposal every step, with no mechanism for a
+cell to partially resist that -- six rounds of message-passing +
+consensus fusion under a *shared* update rule is the recurrent/message-
+passing analogue of GNN oversmoothing (state collapse/over-mixing). `z`
+already had partial inertia (a small fixed-`eta` residual step);
+`mu`/`e`/`u` had none at all.
+
+**Fix -- CellV1.2, a learned per-channel write gate**
+(`src/models/architecture_v1/shared_functions.py::WriteGateFunction`,
+wired into both `dynamics.py` and `sparse_dynamics.py` identically, since
+this changes the shared recurrent-update math, not routing): the
+self+local+global fusion now produces a *proposal*
+(`mu_hat`/`e_hat`/`u_hat`), and `beta = sigmoid(F_gate(mu, e, u, mu_local,
+e_local, u_local[, mu_global, e_global, u_global]))` (one gate per
+channel, `beta_mu`/`beta_e`/`beta_u`/`beta_z`, shared trunk) decides how
+much is accepted: `next = (1 - beta) * old + beta * proposal`. `z`'s fixed
+`eta` scalar is retired -- `beta_z` takes over its exact residual-update
+role, now learned and per-cell/per-example instead of a constant. Gate
+bias initialized to `-2.0` (`sigmoid(-2.0) ~= 0.12`, the user's suggested
+0.1-0.2 range) -- cells mostly preserve themselves early in training.
+
+A shape bug caught immediately by the test suite: `beta_z` is `(batch,
+n_cells)` but `z_delta` is `(batch, n_cells, association_dim)` --
+`beta_z * z_delta` doesn't broadcast correctly without
+`beta_z.unsqueeze(-1)` first (28 test failures until fixed, all in the
+`RuntimeError: size mismatch at dimension 2` pattern). Fixed; full suite
+back to 223/223, including `tests/test_sparse_dense_consistency.py`
+(`write_gate`'s weights are now also copied between the dense/sparse pair
+that test builds, confirming the gated update stays an exact dense/sparse
+match too, not just the routing).
+
+**Why:** The diagnostic protocol (which variant, what to record, the
+train-vs-test fork) and the architectural fix (gated write, per-channel,
+bias-initialized small) were both the user's specification -- implementing
+them is not a new architecture decision.
+
+**Status:** Implemented, tested (223/223, including a new dense/sparse
+consistency check covering the gate), and confirmed fixed. Confirming run
+-- `normal_sparse` (real LSH config, not the full-pool diagnostic config),
+same task/scale/seed, 500 steps: train R² `0.0164` -> **`0.7193`**, test
+R² `0.0079` -> `0.7299`. Within the user's "0.5-0.8" bar for "the
+bottleneck is found," and test tracks train closely (the fix didn't open
+a new overfitting gap) -- roughly matching `cellv0.1`'s original-run level
+(`0.74-0.77`). The gated write is confirmed as the fix.
+
+**Follow-up:** Resume the `V1-S1`/`V1-S2` (256/512-cell) scale sweep on
+`dynamic_groups` with the gate in place -- the question the original
+`run_v1_001.py` command was trying to answer before this flatline was
+found.
+
+## 2026-09-03 — CellV1.3: Self-Organizing Refinement Field implemented, after a real debugging chain
+
+**Context:** User identified CellV1.1's LSH candidate search as an
+engineering choice imposed on the architecture (fixed hash/chunk-size
+parameters deciding neighbor counts) rather than something learned, and
+specified a replacement: local structure as density modes of a
+continuous, learned kernel field (differentiable mean-shift), routing
+position `r` and semantic identity `z` given separate, distinct update
+mechanisms instead of both being folded into one graph-routing
+abstraction. Full design, the six-bug debugging chain (wrong kernel
+family for the positive-random-feature approach; a numerical stabilizer
+that didn't actually cancel; a hidden `O(n*R^2)` term inside a claimed
+`O(n*R)` reduction; signed-kernel division blowups even after switching
+to the correct Gaussian-kernel RFF and to orthogonal features), and the
+fix (self-anchoring the local density on the exactly-known `K(i,i)=1`
+rather than further epsilon patching) are recorded in full in
+`docs/architecture_v1.md` §13 -- not duplicated here.
+
+**Decision / finding:** Implemented at the user's stated defaults
+(`R=256`, `T=1`, self-anchored orthogonal RFF, "do not tune
+evidence/uncertainty further before end-to-end evaluation"):
+`src/models/architecture_v1/{random_features,field_functions,field_fusion,
+field_dynamics,field_model}.py`. `BeliefCellV1`'s `(mu, e, u, z)` and the
+scale-stable-precision fusion formula are unchanged throughout -- only
+neighbor-finding changed, twice now (discrete LSH candidates ->
+continuous kernel field).
+
+**Status:** Implemented and unit-tested (`tests/test_random_features.py`,
+`tests/test_field_functions.py`, `tests/test_field_fusion.py`,
+`tests/test_field_dynamics.py`, `tests/test_field_model.py` -- 30 tests;
+full suite 253/253) plus one training smoke test (15 AdamW steps, loss
+decreasing monotonically, no divergence). Measured (not estimated):
+`n_cells=128`, `R=256`, `T=1`, `batch=32`, CPU -- 24 ms/training-step,
+versus CellV1.1 sparse's ~168 ms/step at a comparable scale (and that was
+`T=6`; this is `T=1`). Confirmed `RoutingGateFunction` correctly gets
+zero gradient at the default `T=1` (`r`'s movement only matters for a
+future step that doesn't exist yet) and a real one at `T=2` -- a
+deliberate regression test.
+
+**Why:** Every design decision (kernel type, role separation of `r`/`z`,
+which literature to draw on, the self-anchoring fix, "stop tuning e/u,
+move to evaluation") was the user's; implementing and debugging the
+approximation math to actually realize that spec is not a new
+architectural decision (`CLAUDE.md` §2's CellV1 exception).
+
+**Not yet done:** No experiment has been run with the field variant --
+unit-tested for "matches the specified math, produces valid bounded
+output," not for task performance. `evidence`/`uncertainty`'s noisier
+(vs. `mu`/`r_bar`) convergence in the R-sweep diagnostic is flagged, not
+resolved, per explicit instruction to defer it. Global (cross-region)
+field communication is designed in conversation but not implemented --
+this pass is local-field-only, one step.
+
+**Follow-up:** Decide whether to run `v1_001_dynamic_groups`-style
+end-to-end evaluation with this field variant (would need a new encoder/
+harness wiring, since the field's `FieldCellState` isn't a drop-in
+`BeliefCellV1`), or scale `T` up first, or investigate `evidence`/
+`uncertainty`'s convergence now that the rest is stable.

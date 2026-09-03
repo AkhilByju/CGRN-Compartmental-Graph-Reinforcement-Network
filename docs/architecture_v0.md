@@ -20,6 +20,16 @@ way `"normalized_precision"` (Method D, Experiment 004F) and
 scale-instability the user found in Method C, both diagnosed/specified by
 the user, neither invented by an agent.
 
+**§3 and §4 below are superseded by a separate, now-implemented line:**
+`docs/architecture_v1.md` — a self-organizing, input-dependent "Dynamic
+Belief Graph" replacing the fixed layer/cluster structure entirely, with a
+fourth cell field `z` (CellV1). Specified by the user on 2026-09-02 and
+implemented in `src/models/architecture_v1/`. This document (V0's fixed
+2-`BeliefLayer` stack) is not superseded as an experimental line — it
+continues to stand on its own (Experiments 002-004) — but §3/§4's open
+sketches are no longer the live design questions for graph structure;
+`docs/architecture_v1.md` is.
+
 ## 1. CellV0 — the basic computational unit
 
 **State: SPECIFIED. Aggregation: FIVE CANDIDATES IMPLEMENTED, none chosen.**

@@ -26,6 +26,24 @@ status and links back to the hypotheses it tests.
 Do not start an experiment before the ones above it in the sequence have
 produced results, unless the user explicitly directs otherwise.
 
+## CellV1 experiment track
+
+The table above is the V0/baseline line's numbered sequence, tied to H1-H6
+(`docs/hypotheses.md`). CellV1 (`docs/architecture_v1.md`, the
+self-organizing "Dynamic Belief Graph" specified 2026-09-02) is a separate
+architecture line and gets its own `v1_NNN` experiment numbering under
+`experiments/`, independent of 001-013 above — inserting it into the table
+above would either overwrite an existing experiment's meaning (e.g. `005`
+already means "Recurrent Reuse," a different, CellV0-line hypothesis) or
+require renumbering the sequence again for a line that isn't part of it.
+
+- **`v1_001` (`experiments/v1_001_dynamic_groups/`)** — "Does
+  self-organizing computation actually help?" `mlp` / `cellv0.1` /
+  `cellv1_local` / `cellv1_full` compared on R2/C2/U2 (existing CellV0
+  datasets, reused) plus `dynamic_groups` (new, designed specifically
+  around CellV1's hypothesis). Decides `docs/architecture_v1.md` §9's
+  local-vs-global staging question directly. See that folder's README.
+
 ## What every run must record
 
 Runs are identified by a config content-hash, never a hand-edited filename
