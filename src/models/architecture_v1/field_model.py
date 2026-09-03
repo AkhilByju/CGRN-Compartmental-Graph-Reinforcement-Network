@@ -7,6 +7,12 @@ never CellV1.1's routing/graph internals, so nothing about them needed to
 change for the field to replace discrete routing) -- only wraps the
 encoder to also produce the field's initial persistent routing position
 `r_0 = F_route(mu_0, e_0, u_0, z_0)`.
+
+`use_global=False` (default): local field only. `use_global=True`: adds
+the linear-attention global communication field on top
+(`field_dynamics.py`, `global_field.py`) -- same encoder/decoder either
+way, since global communication only changes what happens *inside* each
+`FieldRefinementStep`.
 """
 
 from __future__ import annotations
@@ -54,6 +60,8 @@ class SelfOrganizingRefinementField(nn.Module):
         eps: float = 1e-8,
         gate_init_bias: float = -2.0,
         encoder: nn.Module | None = None,
+        use_global: bool = False,
+        global_dim: int = 16,
     ) -> None:
         super().__init__()
         base_encoder = encoder if encoder is not None else PopulationEncoder(
@@ -70,6 +78,8 @@ class SelfOrganizingRefinementField(nn.Module):
             h_min=h_min,
             eps=eps,
             gate_init_bias=gate_init_bias,
+            use_global=use_global,
+            global_dim=global_dim,
         )
         self.decoder = PopulationDecoder(association_dim, out_features, eps=eps)
 

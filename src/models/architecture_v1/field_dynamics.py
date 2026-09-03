@@ -17,6 +17,29 @@ Unlike `z`, `r` has no analogue in `BeliefCellV1` itself -- it's specific
 to how this variant finds structure, not part of the belief being
 carried -- hence the wrapper rather than extending `BeliefCellV1`
 (`cell.py`) itself.
+
+**Global communication (`use_global=False` by default).** Added on top of
+the local field exactly the way `dynamics.py`'s `use_global_routing` was
+added on top of dense CellV1's local-only path: an additive constructor
+flag, not a second step class -- `use_global=False` builds none of the
+global submodules and executes the *identical* local-only lines this
+file had before global communication existed (verified by
+`tests/test_field_local_global_ablation.py`'s zero-regression check), so
+the frozen local-only behavior really is frozen, not just documented as
+such. `use_global=True` additionally computes each cell's send/need gates
+and query/key (`global_field.py`), retrieves a global belief proposal via
+exact linear attention (`global_field.py::linear_global_belief_field`),
+and fuses `{self, local, global}` via the *same* `fusion.py::
+precision_fusion` dense/sparse CellV1 already uses for its own
+self+local+global fuse -- before handing the result to the *unmodified*
+`WriteGateFunction` as its "proposal" argument (that function's signature
+never changes; it just gets fed a richer proposal upstream). The need
+gate's influence is applied by scaling the global proposal's evidence
+(`e_global * need`) before the fuse, rather than by adding `need` as a
+new input to `WriteGateFunction` -- functionally equivalent ("low need ->
+global evidence looks weak -> the existing precision-weighted fuse
+naturally discounts it"), and avoids touching a function this file's
+docstring (and the user's spec) explicitly freezes.
 """
 
 from __future__ import annotations
@@ -35,6 +58,13 @@ from src.models.architecture_v1.field_functions import (
     RoutingGateFunction,
 )
 from src.models.architecture_v1.field_fusion import local_field_fusion
+from src.models.architecture_v1.fusion import precision_fusion
+from src.models.architecture_v1.global_field import (
+    GlobalNeedFunction,
+    GlobalQueryKey,
+    GlobalSendFunction,
+    linear_global_belief_field,
+)
 from src.models.architecture_v1.random_features import RandomFourierFeatures
 from src.models.architecture_v1.shared_functions import WriteGateFunction
 
@@ -70,9 +100,12 @@ class FieldRefinementStep(nn.Module):
         eps: float = 1e-8,
         gate_init_bias: float = -2.0,
         generator: torch.Generator | None = None,
+        use_global: bool = False,
+        global_dim: int = 16,
     ) -> None:
         super().__init__()
         self.eps = eps
+        self.use_global = use_global
 
         self.bandwidth_fn = BandwidthFunction(association_dim, hidden_dim=hidden_dim, h_min=h_min)
         self.mass_fn = MassFunction(association_dim, hidden_dim=hidden_dim)
@@ -86,14 +119,40 @@ class FieldRefinementStep(nn.Module):
         )
 
         self.fuse_bias = nn.Parameter(torch.zeros(n_cells))
-        # Reused as-is: (mu, e, u, mu_field, e_field, u_field) -> 4 gates is
-        # exactly WriteGateFunction(use_global=False)'s existing interface --
-        # "mu_local/e_local/u_local" there and "mu_field/e_field/u_field"
-        # here are the same shape playing the same role (a fused proposal to
-        # blend the old state against).
+        # Reused as-is: (mu, e, u, proposal_mu, proposal_e, proposal_u) -> 4
+        # gates is exactly WriteGateFunction(use_global=False)'s existing
+        # interface. When use_global=False the "proposal" fed in is the raw
+        # local-field fusion; when use_global=True it's the self+local+global
+        # fuse computed below -- WriteGateFunction itself never changes.
         self.write_gate = WriteGateFunction(use_global=False, hidden_dim=hidden_dim, init_bias=gate_init_bias)
         self.routing_gate = RoutingGateFunction(hidden_dim=hidden_dim)
         self.semantic_update = FieldSemanticUpdateFunction(association_dim, routing_dim, hidden_dim=hidden_dim)
+
+        if use_global:
+            self.global_query_key = GlobalQueryKey(association_dim, global_dim)
+            # init_bias=gate_init_bias (not GlobalSendFunction/
+            # GlobalNeedFunction's own default) -- one shared "how off is
+            # off" knob, matching WriteGateFunction's write_gate above.
+            self.send_fn = GlobalSendFunction(hidden_dim=hidden_dim, init_bias=gate_init_bias)
+            self.need_fn = GlobalNeedFunction(hidden_dim=hidden_dim, init_bias=gate_init_bias)
+            self.global_fuse_bias = nn.Parameter(torch.zeros(n_cells))
+            # Same "learned per-source gate for the final fuse" convention as
+            # dynamics.py's source_gate_logit -- 3 fixed meta-sources here
+            # (self, local, global), always (the field has no local-ablation
+            # arm the way dense CellV1 does). Self/local start at the
+            # original equal-weight 0 (sigmoid(0)=0.5, unchanged from
+            # dynamics.py's own convention); global starts at gate_init_bias
+            # so the fused proposal begins close to the local-only case, with
+            # global entering as a residual correction rather than an equal
+            # (and, before send/need have learned anything, uninformative)
+            # third vote -- see GlobalSendFunction's docstring for why.
+            self.source_gate_logit = nn.Parameter(torch.tensor([0.0, 0.0, gate_init_bias]))
+        else:
+            self.global_query_key = None
+            self.send_fn = None
+            self.need_fn = None
+            self.global_fuse_bias = None
+            self.source_gate_logit = None
 
     def forward(self, state: FieldCellState) -> FieldCellState:
         mu, evidence, uncertainty, z = state.cells.mu, state.cells.evidence, state.cells.uncertainty, state.cells.z
@@ -110,11 +169,31 @@ class FieldRefinementStep(nn.Module):
             mu, evidence, uncertainty, r, m, psi, psi_sq, self.fuse_bias, self.eps
         )
 
-        beta_mu, beta_e, beta_u, beta_z = self.write_gate(mu, evidence, uncertainty, mu_field, e_field, u_field)
-        mu_next = (1 - beta_mu) * mu + beta_mu * mu_field
-        evidence_next = (1 - beta_e) * evidence + beta_e * e_field
-        uncertainty_next = (1 - beta_u) * uncertainty + beta_u * u_field
+        if self.use_global:
+            send = self.send_fn(mu, evidence, uncertainty, mu_field, e_field, u_field)
+            need = self.need_fn(mu, evidence, uncertainty, mu_field, e_field, u_field)
+            q = self.global_query_key.query_of(z)
+            k = self.global_query_key.key_of(z)
+            mu_global, e_global, u_global = linear_global_belief_field(mu, evidence, uncertainty, send, q, k, self.eps)
+            e_global_gated = need * e_global  # need-gate applied here -- see module docstring
 
+            m_fuse = torch.stack([mu, mu_field, mu_global], dim=-1)
+            e_fuse = torch.stack([evidence, e_field, e_global_gated], dim=-1)
+            u_fuse = torch.stack([uncertainty, u_field, u_global], dim=-1)
+            gate = torch.sigmoid(self.source_gate_logit).expand_as(m_fuse)
+            mu_hat, e_hat, u_hat, _ = precision_fusion(m_fuse, gate, e_fuse, u_fuse, self.global_fuse_bias, self.eps)
+        else:
+            mu_hat, e_hat, u_hat = mu_field, e_field, u_field
+
+        beta_mu, beta_e, beta_u, beta_z = self.write_gate(mu, evidence, uncertainty, mu_hat, e_hat, u_hat)
+        mu_next = (1 - beta_mu) * mu + beta_mu * mu_hat
+        evidence_next = (1 - beta_e) * evidence + beta_e * e_hat
+        uncertainty_next = (1 - beta_u) * uncertainty + beta_u * u_hat
+
+        # r's mean-shift stays purely local-field-driven regardless of
+        # use_global -- self-organization (r) and communication (global) are
+        # deliberately separate concerns (docs/architecture_v1.md), and
+        # RoutingGateFunction is frozen.
         beta_r = self.routing_gate(mu, evidence, uncertainty, mu_field, e_field, u_field)
         r_next = r + beta_r.unsqueeze(-1) * (r_bar - r)
 
