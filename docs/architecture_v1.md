@@ -52,16 +52,19 @@ accuracy across a 4-level complexity sweep with substantially less seed
 variance than either field variant, and no collapse on any of 12
 (level, seed) combinations tested.
 
-**CellV1.5 (§16, SPECIFIED, same day):** A persistent, sparse,
-slowly-learned structural graph `w_ij` (address-derived, never a stored
-per-edge parameter) gating CellV1.4's dynamic kernel `a_ij(t)` —
+**CellV1.5 (§16, SPECIFIED AND IMPLEMENTED, same day):** A persistent,
+sparse, slowly-learned structural graph `w_ij` (address-derived, never a
+stored per-edge parameter) gating CellV1.4's dynamic kernel `a_ij(t)` —
 `c_ij(t) = w_ij * a_ij(t)`. Motivated by cell-assembly theory rather than
 "rebuild the graph every step." Replaces §5/§13/§14's routing entirely
 for this variant — one substrate, no explicit local/global split; those
-stay in the repository as frozen historical baselines. Fully specified,
-including utility/growth-score formulas, edge budget, bootstrap, and a
-100-optimizer-step plasticity schedule with a 20%-of-training freeze.
-Not yet implemented.
+stay in the repository as frozen historical baselines. Utility/growth-
+score formulas, sparse-neighbor aggregation, edge budget/bootstrap, and a
+100-optimizer-step plasticity schedule with a 20%-of-training freeze are
+all implemented (`src/models/architecture_v1/structural*.py`), unit-
+tested (45 tests, including a dense/sparse consistency check and a linear
+edge-count scaling check), and pass one short training smoke test. No
+experiment run yet.
 
 ## 0. Relationship to Architecture V0
 
@@ -857,13 +860,19 @@ named in the module's own docstring as deliberately deferred ("I would
 not do another huge sweep") — `AssociationRefinementCore` still takes a
 fixed `num_steps`, a known gap against the fuller spec, not a bug.
 
-## 16. CellV1.5 — Persistent Structural Substrate (SPECIFIED)
+## 16. CellV1.5 — Persistent Structural Substrate (SPECIFIED AND IMPLEMENTED)
 
-**Status: SPECIFIED, not yet implemented.** Fully specified by the user
-across a multi-turn design conversation, same day as §14/§15 (full trace
-in this section's revision-history entries, §17). Every formula below is
-the user's; nothing here is an agent invention, per the same rule that
-governed CellV1's own genesis (§0/§14 of `CLAUDE.md`).
+**Status: SPECIFIED AND IMPLEMENTED, no experiment run.** Fully specified
+by the user across a multi-turn design conversation, same day as §14/§15
+(full trace in this section's revision-history entries, §17). Every
+formula below is the user's; nothing here is an agent invention, per the
+same rule that governed CellV1's own genesis (§0/§14 of `CLAUDE.md`).
+Implemented in `src/models/architecture_v1/structural*.py` (§16.12),
+unit-tested (45 new tests, full suite 319/319) plus one short training
+smoke test -- validated for "matches the specified formulas, produces
+valid finite output, scales linearly in edge count," the same bar
+`docs/architecture_v1.md`'s other CellV1 variants were held to before
+their first real experiment, not for task performance.
 
 > **One persistent sparse synaptic substrate. Backprop learns the cell
 > identities and communication rules; slow structural plasticity changes
@@ -1125,160 +1134,51 @@ local/global routing, §13's RFF field, and §14's global field are
 superseded for this variant (§16.1) and kept only as frozen historical
 baselines.
 
-### Motivation
+### 16.12 Implementation map
 
-Every CellV1 variant so far (§1-§15) answers "who should this cell talk
-to right now" by *recomputing the entire candidate search from scratch,
-every refinement step* — dense pairwise scoring (§5), LSH candidate pools
-(§11), a continuous kernel field (§13), or the exact learned kernel
-(§15). The user's diagnosis, prompted by a design discussion the user had
-outside this session and then relayed here: this treats "dynamic
-functional organization" as "dynamically rebuild the wiring," which
-doesn't match how cell-assembly theory describes cortical organization —
-a relatively persistent synaptic substrate, with functional assemblies
-emerging from *which parts of that substrate are currently active*, not
-from redrawing the substrate itself. Reference: cell assemblies as
-distributed, overlapping populations whose functional participation
-changes with activity (Buzsáki 2010, "Neural syntax," and the
-"synapsemble" framing of dynamically-changing effective-synapse
-constellations it draws on).
+`src/models/architecture_v1/`:
 
-### Core decomposition
+| Module | Contents |
+|---|---|
+| `structural.py` | `StructuralAddress` (`s`, `W_out`/`W_in`, `edge_weights` -- §16.3), `EdgeRegistry` (the runtime-resizable edge/utility/age buffers -- §16.2/§16.6/§16.8), `CellActivity` (`A_i`'s EMA -- §16.7) |
+| `structural_fusion.py` | `sparse_structural_fusion` -- the `index_add_`-based scatter reduction realizing §16.5's content/precision split; also constructs the `edge_message_full` tensor §16.6's utility signal reads |
+| `structural_dynamics.py` | `StructuralSemanticUpdateFunction`, `StructuralRefinementStep` (one refinement step, §16.5), `StructuralRefinementCore` (owns the substrate, the `T`-step loop, `update_edge_utility`, `bootstrap_structural_graph`, `maybe_run_structural_plasticity`) |
+| `structural_plasticity.py` | `StructuralPlasticityConfig`, `should_run_plasticity` (§16.9's schedule), `run_growth`/`run_prune`/`bootstrap`/`run_plasticity_event` (§16.7/§16.8) |
+| `structural_model.py` | `StructuralBeliefGraph` -- encoder -> core -> decoder, unwrapped (same pattern as §15's `association_model.py`) |
 
-```text
-w_ij    -- structural connectivity: persistent, sparse, slowly learned
-a_ij(t) -- functional connectivity: input-dependent, recomputed every step
-c_ij(t) = w_ij * a_ij(t)   -- effective communication strength
-```
+**A real correctness subtlety, worth recording.** §16.6 defines the
+utility signal from `m_ij = w_ij * a_ij(t) * mu_i` (the *full* effective
+message), which is a different quantity from §16.5's own `m_ij = w_ij *
+mu_i` (content only, no `a`) -- the spec uses `m_ij` for both because
+they serve different purposes in different subsections. Naively
+computing the full-message tensor as a side artifact (`w*a*mu`, not
+actually wired into the forward computation) would give it `.grad = None`
+after backward -- it would never influence the loss, so there'd be
+nothing to differentiate. Fixed by re-associating the precision-fusion
+arithmetic so the full message *is* what's multiplied into the fusion
+(`pm_sum` computed via `edge_message_full * precision_no_a` instead of
+`p * m` directly -- provably the same value, since `a` just moves from
+the precision factor onto the content factor) -- this gives
+`edge_message_full` a genuine place in the graph, so its retained
+gradient after `loss.backward()` is the real `dL/dm_ij`, not a
+structurally-guaranteed `None`. `tests/test_structural_fusion.py::
+test_edge_message_full_gradient_is_real_and_matches_algebra` is a
+regression test for this.
 
-`w_ij` says "this pair *can* communicate" (changes over training, not
-within a forward pass). `a_ij(t)` says "should they, right now" (changes
-every refinement step, same role §15's `a_ij` already plays). The
-architectural claim: functional assemblies should be able to emerge from
-which *existing* edges are currently active, without ever materializing
-or scoring an `(n_cells, n_cells)` structure.
-
-### What's specified
-
-- **Cell state:** unchanged — `BeliefCellV1 = (mu, e, u, z)` (§3), same
-  as every variant since §1.
-- **`a_ij(t)`:** reuse §15's `AssociationFunction` unmodified — `phi_i =
-  softplus(F_assoc(mu_i, e_i, u_i, z_i))`, evaluated only for cells with
-  an existing structural edge (not the full population), `a_ij(t) =
-  phi_i . phi_j` restricted to that edge.
-- **`w_ij` — RESOLVED (2026-09-03): implicit, address-derived, never a
-  stored per-edge `Parameter`.** Every persistent cell has a learned
-  **structural address** `s_i in R^{d_s}` — an `(n_cells, d_s)` parameter
-  table, one row per cell slot. Unlike `z`, `s_i` does **not** depend on
-  the current input or belief state: it is a fixed per-cell identity,
-  trained by ordinary backprop, the same for every example/batch —
-  "who this cell structurally is," not "what it currently believes."
-  For an existing directed edge `(i, j)`:
-
-  ```text
-  q_i = W_out s_i,  k_j = W_in s_j      (shared learned linear maps, no bias)
-  w_ij = tanh(q_i . k_j / sqrt(d_s))
-  ```
-
-  Storage is only the sparse edge topology (an `(E, 2)` index list) plus
-  non-parameter structural metadata (utility, age — open question 1
-  below); `w_ij` itself is never stored, only recomputed from
-  `s_i`/`s_j`/`W_out`/`W_in` for whichever edges currently exist, every
-  forward pass — the same "shared function over the current structure,
-  not a per-pair free parameter" convention every other CellV1 mechanism
-  already follows (§2's rule against `BeliefLayer`-style permanent
-  per-pair parameters extends cleanly from routing to the structural
-  graph itself). This is also what resolves the growing/shrinking-
-  parameter-tensor problem the first draft of this section flagged:
-  growth needs no weight initialization scheme (a new edge's `w_ij`
-  is just the formula evaluated on that pair, immediately well-defined),
-  and pruning has no optimizer state to reconcile (there was never a
-  per-edge optimizer slot to begin with) — it's exactly a row deletion
-  from the edge-index list.
-
-  Compute: project every cell's address once per forward pass —
-  `q_all = S W_out^T`, `k_all = S W_in^T`, `O(n_cells * d_s^2)` — then
-  gather `q_i`/`k_j` for the `E` existing edges and dot them, `O(E *
-  d_s)`. No `(n_cells, n_cells)` tensor at any point, matching the same
-  budget §11's LSH candidate search and §15's association kernel already
-  hold themselves to.
-- **Structural plasticity is occasional, not per-step.** Rewiring happens
-  at discrete structural-plasticity events during training (a schedule,
-  not every forward pass); between events the edge topology is fixed —
-  `s_i`, `W_out`, `W_in`, and every other parameter still train normally
-  every step, so `w_ij` for existing edges keeps changing even without a
-  plasticity event, just not *which* edges exist.
-- **Growth, at a structural-plasticity event:**
-  1. Compute every cell's `phi_i` via the existing shared
-     `AssociationFunction` (§15) — the *learned* representation, not a
-     fixed/random one.
-  2. Build or update an approximate-nearest-neighbor / maximum-inner-
-     product-search (ANN/MIPS) index over those `phi` vectors.
-  3. For each cell, retrieve a small candidate pool via approximate
-     search in that index — **the ANN/LSH mechanism is only the search
-     algorithm over the learned `phi`-space; it is explicitly not itself
-     the growth criterion** (the user was explicit: fixed-random-LSH
-     similarity must not be mistaken for the biological/learned
-     criterion — contrast with §11, where LSH candidate-filtering *was*
-     the whole mechanism, on a fixed/unlearned hash).
-  4. Run an *exact* learned growth score only on that small candidate
-     pool — combining association compatibility with accumulated
-     activity/utility statistics (exact formula: open, see below).
-  5. Add only the highest-scoring proposed edges to the edge-index list —
-     no weight to initialize; `w_ij` is immediately defined by the two
-     cells' current structural addresses (resolved above).
-- **Pruning:** maintain a running per-edge utility statistic (based on
-  the edge's contribution to loss/gradient, optionally co-activity);
-  periodically remove persistently low-utility edges from the edge-index
-  list (resolved above: nothing else to clean up).
-- **Explicit constraints from the user, verbatim in spirit:** never
-  materialize a dense `(n_cells, n_cells)` matrix or parameter anywhere;
-  no fixed number of groups; no permanently designated local/global
-  cells (consistent with §1's original CellV1 hypothesis, which already
-  ruled this out for routing — this extends the same principle to the
-  structural graph itself).
-
-### Open questions (not to be resolved by the agent)
-
-1. **Utility-statistic formula.** "Contribution to loss/gradient,
-   optionally co-activity" is a description, not a formula — e.g. an EMA
-   of `|dL/dw_ij|`, of the message/`c_ij` magnitude actually carried, a
-   measure of `a_ij(t)` co-activity over recent steps, or some
-   combination, and with what decay/window.
-2. **Growth-score formula.** How association compatibility (`phi_i .
-   phi_j`) and the accumulated utility/activity statistics combine into
-   one score for ranking candidates — a fixed combination (e.g. product,
-   sum) or a small shared learned function in the style of `F_need`/
-   `F_offer` (§5 Part III)?
-3. **Aggregation formula.** Does `learned_local_association_fusion`
-   (§15) carry over unchanged, just with its sums restricted to each
-   cell's structural neighbor set instead of the whole population (same
-   math, smaller domain), or does `c_ij(t)` change the fusion formula
-   itself?
-4. **Edge budget and bootstrap topology.** Target average degree `k`
-   (analogous to §11's `pool_size`, §13's `R`), and what a freshly
-   encoded cell population's structural graph looks like *before* the
-   first plasticity event — empty (bootstrapped entirely by early growth
-   events) or seeded with one initial growth pass before training starts?
-5. **Plasticity schedule.** What "occasionally" means concretely (every
-   `K` optimizer steps? every `K` refinement steps `T`? epoch
-   boundaries?), and how many edges are added/pruned per event.
-6. **Relationship to existing local/global routing (§5 Parts I & III)
-   and the global field (§14).** The user's original framing suggested
-   local-vs-global should simply fall out of short- vs. long-range edges
-   in *one* substrate, not a separate mechanism — does this proposal
-   replace §5/§14's routing split entirely, or run alongside it?
-
-### Relationship to prior variants
-
-Builds directly on §15's `AssociationFunction` for `a_ij(t)` — not a new
-kernel. Reframes, rather than replaces, the question §11 (LSH candidate
-pools) and §13 (RFF field) each answered: those found "who is dynamically
-similar right now" from scratch every step; this asks "who is my
-*persistent* structural neighbor, and how strongly are we currently
-talking." §11's ANN-style candidate search returns as a sub-component
-(step 3 above) but now searches learned `phi`-space for a slow structural
-decision, not a per-step routing decision.
+Tests: `tests/test_structural.py` (10), `tests/test_structural_fusion.py`
+(9, including the dense/sparse consistency check on hand-built chain/
+star/hub/isolated-cell graphs -- the same "sparse must equal dense, not
+just look similar" bar `test_sparse_dense_consistency.py` holds CellV1.1
+to -- plus an `O(E)`-not-`O(n_cells^2)` empirical scaling check),
+`tests/test_structural_plasticity.py` (11, including the in-degree-1
+safety constraint under adversarial pruning), `tests/
+test_structural_dynamics.py` (10), `tests/test_structural_model.py` (5,
+including a 15-step AdamW smoke test through the full documented
+integration contract -- loss decreases, no divergence, edge count and
+in-degree invariants hold throughout) -- 45 new tests total
+(10+9+11+10+5), full suite 319/319. **Correctness-tested, not
+performance-tested** -- no experiment has been run; see §16's status
+line.
 
 ## 17. Revision history
 
@@ -1422,3 +1322,31 @@ decision, not a per-step routing decision.
   `A_i`'s EMA decay, `d_s` default, plasticity-event integration point)
   for the handful of genuine glue-level gaps the spec didn't need to
   cover. Not yet implemented.
+- 2026-09-03 (later still): Implemented CellV1.5
+  (`src/models/architecture_v1/structural*.py`, §16.12) exactly to the
+  finalized spec. The sparse-neighbor aggregation (§16.5) is realized via
+  `index_add_` scatter reduction rather than a padded dense-per-target
+  layout, since the structural graph has no degree bound (a hub cell
+  could otherwise force an `O(n_cells * E)` pad) -- validated against
+  `fusion.py::precision_fusion` run on an explicit dense layout on
+  hand-built chain/star/hub/isolated-cell graphs, the same bar
+  `test_sparse_dense_consistency.py` holds CellV1.1's sparse routing to.
+  A real correctness bug surfaced during implementation and was fixed:
+  §16.6's utility signal needs `m_ij = w_ij*a_ij(t)*mu_i` to carry a
+  genuine gradient, but naively computing it as a side artifact (not
+  wired into the actual fusion arithmetic) would give `.grad = None`
+  after backward -- fixed by re-associating the precision-fusion formula
+  so this exact tensor is what the fusion multiplies through, provably
+  the same value, now with a real gradient (§16.12's writeup, regression
+  test in `test_structural_fusion.py`). `E_max`/`k_bar`, the in-degree-1
+  safety constraint (enforced during both bootstrap and every prune),
+  and the 200/100/5%/20% schedule are all implemented as specified.
+  Unit-tested (45 new tests: `structural.py`, `structural_fusion.py`
+  including an `O(E)`-not-quadratic scaling check, `structural_plasticity.py`
+  including adversarial-pruning-vs-safety-constraint cases,
+  `structural_dynamics.py`, `structural_model.py` including a 15-step
+  AdamW smoke test through the full documented forward/backward/
+  update_edge_utility/optimizer.step/maybe_run_structural_plasticity
+  integration contract), full suite 319/319. No experiment run --
+  correctness-tested only, matching the bar every other CellV1 variant
+  was held to before its first real run.

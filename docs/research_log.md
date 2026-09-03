@@ -1695,3 +1695,115 @@ step, and the plasticity-event method), tests mirroring this codebase's
 existing shape/invariant/gradient-finiteness convention, and training-
 loop wiring for the optimizer-step-keyed plasticity schedule. No
 experiment run yet.
+
+## 2026-09-03 (later still) — CellV1.5 implemented
+
+**Context:** Following the previous entry's full specification (all six
+open questions resolved, `docs/architecture_v1.md` §16 rewritten as
+SPECIFIED), this entry records the implementation itself --
+`src/models/architecture_v1/structural.py`,
+`structural_fusion.py`, `structural_dynamics.py`,
+`structural_plasticity.py`, `structural_model.py` (§16.12 has the full
+module map).
+
+**What was built, following the spec exactly:**
+
+- `StructuralAddress`: persistent, input-independent `s_i in R^{d_s}`
+  plus `W_out`/`W_in`, `w_ij = tanh(q_i . k_j / sqrt(d_s))` computed only
+  for existing edges, never stored.
+- `EdgeRegistry`: the sparse topology plus utility/age, as plain
+  `register_buffer` tensors reassigned (not `nn.Parameter`) whenever
+  edges are added/removed -- genuinely resizable at runtime, unlike
+  every other buffer in this codebase. `state_dict()` round-trips only
+  when the edge count matches at load time; resuming into a
+  differently-sized registry isn't handled (flagged, not solved).
+- `CellActivity`: `A_i`'s EMA (§16.7), detached before reduction so it
+  doesn't leak the live autograd graph across calls.
+- `sparse_structural_fusion`: the scale-stable precision-fusion formula
+  (Method E / CellV0.1, reused by every CellV1 variant) restricted to
+  each cell's structural in-neighbors, via `index_add_`-based scatter
+  reduction rather than a padded dense-per-target layout. The padding
+  approach was rejected specifically because CellV1.5's graph has no
+  degree bound (§16.8: "a hub cell might have 30 edges") -- padding
+  every target row to the population's max degree could cost `O(n_cells
+  * E)` in the pathological case where most edges converge on one cell,
+  which is quadratic-ish and defeats the point of a sparse substrate.
+  Scatter reduction is `O(E)` regardless of degree distribution.
+- `StructuralRefinementStep`/`Core`: dynamic gate (`AssociationFunction`,
+  reused unmodified from §15) -> sparse structural fusion -> self+
+  structural 2-source fuse (`precision_fusion`, learned gate) -> the
+  existing `WriteGateFunction` -> a `z` update analogous to §15's. `w`
+  is computed once per forward pass (before the `T`-step loop), not
+  recomputed per step, since structural addresses don't change within a
+  call -- only the functional gate and belief state do.
+- `structural_plasticity.py`: growth (LSH candidate retrieval over
+  `phi`-space, reusing `lsh.py` unmodified, exact `G_ij` scoring only on
+  the retrieved pool), pruning (bottom-`U` fraction, in-degree-1
+  protected), bootstrap, and the 200-warmup/100-interval/5%-prune/
+  20%-freeze schedule, all as config with the spec's stated defaults.
+
+**A real bug found and fixed during implementation (not just a numerical
+one -- a structural gradient-flow bug):** §16.6 defines the utility
+signal from `m_ij = w_ij * a_ij(t) * mu_i`, distinct from §16.5's own
+`m_ij = w_ij * mu_i` (content only) -- the spec reuses the name `m_ij`
+for two different quantities across two subsections. The first
+implementation attempt computed the full-message quantity as a plain
+side artifact (`w * a * mu`, retained via `.retain_grad()`) without it
+actually appearing in the computation that produces the fused output.
+Since nothing in the forward graph depended on it, its `.grad` after
+`backward()` was structurally guaranteed to be `None` -- not a
+numerical-precision issue, a "this tensor was never part of the
+computation" issue, caught by
+`tests/test_structural_fusion.py::test_edge_message_full_gradient_is_real_and_matches_algebra`
+before it could silently ship as "utility always stays zero." Fixed by
+re-associating the precision-fusion arithmetic: since `p_ij * m_ij =
+(a_ij * precision_no_a_ij) * m_ij = (a_ij * m_ij) * precision_no_a_ij =
+edge_message_full * precision_no_a_ij`, routing the fusion's `pm_sum`
+through `edge_message_full * precision_no_a` (provably the same value,
+verified in the same test file's dense-consistency check) instead of
+`p * m` directly gives `edge_message_full` a genuine place in the graph
+-- its retained gradient is now the real `dL/d(edge_message_full)`.
+
+**Status:** Implemented and unit-tested -- 45 new tests
+(`test_structural.py` 10, `test_structural_fusion.py` 9 including the
+dense/sparse consistency check on hand-built chain/star/hub/isolated-
+cell graphs (the same bar `test_sparse_dense_consistency.py` holds
+CellV1.1 to) and an `O(E)`-not-`O(n_cells^2)` empirical scaling check,
+`test_structural_plasticity.py` 11 including the in-degree-1 safety
+constraint tested under adversarial pruning (fraction=1.0, i.e. "try to
+prune everything"), `test_structural_dynamics.py` 10,
+`test_structural_model.py` 5 including a 15-step AdamW smoke test
+through the full training-loop integration contract (forward ->
+backward -> `update_edge_utility` -> `optimizer.step` ->
+`maybe_run_structural_plasticity`) -- loss decreased monotonically
+end-to-start, no divergence, edge count and in-degree invariants held
+throughout). Full suite 274 -> 319, all passing. **No experiment has
+been run** -- this is "matches the specified formulas, produces valid
+finite output, scales linearly in edge count" validation, the same bar
+every other CellV1 variant was held to before its first real run, not a
+task-performance claim.
+
+**Also found while touching `docs/architecture_v1.md` for this entry:**
+an earlier edit to §16 (the "finalize spec" pass) left the old, now-
+superseded "Motivation"/"Core decomposition"/"What's specified"/"Open
+questions"/"Relationship to prior variants" subsections from the
+PROPOSED-status draft still in the file, duplicated after the new
+§16.0-§16.11 content and before §17's revision history -- a real
+leftover-content bug, not a design issue. Removed as part of this
+entry's doc update; §16.12 (the implementation map) now sits where that
+dead block was.
+
+**Why:** Every formula implemented is the user's, specified in the
+previous two log entries; the implementation choices made here
+(scatter-reduction over padding, the `edge_message_full` re-association,
+module/file split) are engineering realizations of that spec, not new
+architecture decisions -- flagged inline in each module's docstring the
+same way §16.10's implementation-choice defaults are.
+
+**Follow-up:** No experiment has been run with CellV1.5 yet. Natural
+next steps, not yet decided: wiring it into `v1_001_dynamic_groups`'s
+harness alongside `cellv0.1`/`association_local_global_t2` for a
+matched-parameter comparison, and separately, `EdgeRegistry`'s
+`state_dict()`/`load_state_dict()` limitation (round-trips only when
+edge count matches) would need addressing before checkpoint-resume
+support is needed for a real training run.
