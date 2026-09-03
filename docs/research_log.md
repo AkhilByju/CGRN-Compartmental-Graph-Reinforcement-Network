@@ -1481,3 +1481,66 @@ existing `AssociationFunction`'s `phi_i = softplus(F_assoc(...))` is a
 natural starting point for that dynamic term `a_ij(t)` -- what's missing
 for that next step is the slow, structurally-sparse `w_ij` component
 itself, not a new kernel.
+
+## 2026-09-03 (later still) — CellV1.5 proposed: persistent structural substrate, not finalized
+
+**Context:** After CellV1.4 landed cleanly (previous entry), the user
+relayed a design conversation (conducted outside this session, pasted in
+in full) proposing a pivot for Hypothesis B itself, not just another
+CellV0.1-adjacent tweak. The diagnosis: every CellV1 variant tried so far
+(§1-§15 of `docs/architecture_v1.md`) treats "dynamic functional
+organization" as "rebuild the candidate graph from scratch every
+refinement step" -- dense pairwise scoring, LSH pools, an RFF field, now
+an exact learned kernel. Grounded in cell-assembly theory (Buzsáki 2010,
+"Neural syntax"; the "synapsemble" framing), the proposal is that this
+doesn't match cortical organization: a relatively persistent synaptic
+substrate, with functional assemblies emerging from *which parts of it
+are currently active*, not from redrawing the substrate itself.
+
+**Decision:** Captured, not implemented. Before writing any code, I
+flagged that this is a new architecture decision under `CLAUDE.md` §2's
+CellV1 exception (dynamic-graph routing and fast contextual association
+are only exempted from the "MUST NOT invent architecture math" rule
+*because* the user specifies them explicitly, turn by turn -- the same
+now applies to structural plasticity, which the MUST-NOT list names
+directly) and asked two targeted questions rather than guessing:
+
+1. What to do about a backlog of real, undocumented results from this
+   same session (the CellV1.3.1/CellV1.4 work just logged above) before
+   scoping a pivot -- user chose to log/commit that work first (done;
+   see the two entries above and `docs/architecture_v1.md` §14-§15).
+2. How new synapse candidates should be proposed, given the user's own
+   constraint that this can't be an `O(n_cells^2)` scan or purely random
+   assignment -- user specified: reuse `AssociationFunction`'s already-
+   validated learned `phi` representation as the retrieval space, but
+   search it via an approximate nearest-neighbor / maximum-inner-product
+   index rather than exhaustive pairwise scoring, explicitly warning that
+   LSH/ANN must be *only* the indexing algorithm over that learned space,
+   never mistaken for the growth criterion itself (the way §11's LSH
+   *was* the whole routing mechanism, on a fixed/unlearned hash).
+
+**Status:** Proposal captured in `docs/architecture_v1.md` §16 as
+CellV1.5, explicitly marked PROPOSED, NOT FINALIZED, with seven open
+questions listed (exact utility-statistic and growth-score formulas; how
+`w_ij` is parameterized as a PyTorch parameter given edges are added and
+pruned at runtime -- a real engineering question, not just a research
+one; the aggregation formula's exact domain once edges are sparse; edge
+budget and bootstrap topology; the plasticity schedule; and the
+relationship to existing local/global routing, §5/§14). No code written.
+Full suite still 274/274 (unchanged -- no implementation touched).
+
+**Why:** The core hypothesis and every mechanism decision so far (the
+`w_ij * a_ij(t)` decomposition, reusing `AssociationFunction`, occasional
+not per-step plasticity, ANN-as-indexing-not-criterion) came from the
+user across two turns; this is the same "capture the proposal, list what
+remains open" step CellV1 itself went through on 2026-09-01 before being
+fully specified the next day (§17's revision history) -- not a
+regression in process, the established one.
+
+**Follow-up:** Whenever the user is ready to resolve the open questions
+(most consequentially #3, `w_ij`'s parameterization, since it determines
+whether this needs genuinely new PyTorch parameter-management machinery
+or can reuse the existing shared-function convention via persistent
+per-cell structural addresses), this becomes CellV1.5 proper the same
+way CellV1.1-CellV1.4 each did: a fully specified doc section, then
+implementation.

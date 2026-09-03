@@ -52,6 +52,12 @@ accuracy across a 4-level complexity sweep with substantially less seed
 variance than either field variant, and no collapse on any of 12
 (level, seed) combinations tested.
 
+**CellV1.5 (§16, PROPOSED, NOT FINALIZED, same day):** A persistent,
+sparse, slowly-learned structural graph `w_ij` gating CellV1.4's dynamic
+kernel — `c_ij(t) = w_ij * a_ij(t)`. Motivated by cell-assembly theory
+rather than "rebuild the graph every step." Captured as a proposal with
+several open architecture questions listed (§16), not implemented.
+
 ## 0. Relationship to Architecture V0
 
 `docs/architecture_v0.md` froze the "what is one cell" question in favor
@@ -846,7 +852,146 @@ named in the module's own docstring as deliberately deferred ("I would
 not do another huge sweep") — `AssociationRefinementCore` still takes a
 fixed `num_steps`, a known gap against the fuller spec, not a bug.
 
-## 16. Revision history
+## 16. CellV1.5 (proposed, NOT FINALIZED) — Persistent structural substrate with dynamic functional gating
+
+**Status: proposed across a multi-turn design conversation, same day as
+§14/§15. Not finalized — several open questions listed below. No code
+written for this section.** Captured here per the same convention CellV1
+itself started with (§17's 2026-09-01 entry: "proposal captured... not
+finalized, eleven open questions listed").
+
+### Motivation
+
+Every CellV1 variant so far (§1-§15) answers "who should this cell talk
+to right now" by *recomputing the entire candidate search from scratch,
+every refinement step* — dense pairwise scoring (§5), LSH candidate pools
+(§11), a continuous kernel field (§13), or the exact learned kernel
+(§15). The user's diagnosis, prompted by a design discussion the user had
+outside this session and then relayed here: this treats "dynamic
+functional organization" as "dynamically rebuild the wiring," which
+doesn't match how cell-assembly theory describes cortical organization —
+a relatively persistent synaptic substrate, with functional assemblies
+emerging from *which parts of that substrate are currently active*, not
+from redrawing the substrate itself. Reference: cell assemblies as
+distributed, overlapping populations whose functional participation
+changes with activity (Buzsáki 2010, "Neural syntax," and the
+"synapsemble" framing of dynamically-changing effective-synapse
+constellations it draws on).
+
+### Core decomposition
+
+```text
+w_ij    -- structural connectivity: persistent, sparse, slowly learned
+a_ij(t) -- functional connectivity: input-dependent, recomputed every step
+c_ij(t) = w_ij * a_ij(t)   -- effective communication strength
+```
+
+`w_ij` says "this pair *can* communicate" (changes over training, not
+within a forward pass). `a_ij(t)` says "should they, right now" (changes
+every refinement step, same role §15's `a_ij` already plays). The
+architectural claim: functional assemblies should be able to emerge from
+which *existing* edges are currently active, without ever materializing
+or scoring an `(n_cells, n_cells)` structure.
+
+### What's specified
+
+- **Cell state:** unchanged — `BeliefCellV1 = (mu, e, u, z)` (§3), same
+  as every variant since §1.
+- **`a_ij(t)`:** reuse §15's `AssociationFunction` unmodified — `phi_i =
+  softplus(F_assoc(mu_i, e_i, u_i, z_i))`, evaluated only for cells with
+  an existing structural edge (not the full population), `a_ij(t) =
+  phi_i . phi_j` restricted to that edge.
+- **`w_ij`:** persistent, sparse (`O(E)` storage, `E` edges, not
+  `O(n_cells^2)`), trained by ordinary backprop like any other parameter
+  for as long as an edge exists.
+- **Structural plasticity is occasional, not per-step.** Rewiring happens
+  at discrete structural-plasticity events during training (a schedule,
+  not every forward pass); between events the graph is fixed and only
+  `w_ij` values and every other parameter train normally.
+- **Growth, at a structural-plasticity event:**
+  1. Compute every cell's `phi_i` via the existing shared
+     `AssociationFunction` (§15) — the *learned* representation, not a
+     fixed/random one.
+  2. Build or update an approximate-nearest-neighbor / maximum-inner-
+     product-search (ANN/MIPS) index over those `phi` vectors.
+  3. For each cell, retrieve a small candidate pool via approximate
+     search in that index — **the ANN/LSH mechanism is only the search
+     algorithm over the learned `phi`-space; it is explicitly not itself
+     the growth criterion** (the user was explicit: fixed-random-LSH
+     similarity must not be mistaken for the biological/learned
+     criterion — contrast with §11, where LSH candidate-filtering *was*
+     the whole mechanism, on a fixed/unlearned hash).
+  4. Run an *exact* learned growth score only on that small candidate
+     pool — combining association compatibility with accumulated
+     activity/utility statistics (exact formula: open, see below).
+  5. Add only the highest-scoring proposed edges.
+- **Pruning:** maintain a running per-edge utility statistic (based on
+  the edge's contribution to loss/gradient, optionally co-activity);
+  periodically prune persistently low-utility existing edges.
+- **Explicit constraints from the user, verbatim in spirit:** never
+  materialize a dense `(n_cells, n_cells)` matrix or parameter anywhere;
+  no fixed number of groups; no permanently designated local/global
+  cells (consistent with §1's original CellV1 hypothesis, which already
+  ruled this out for routing — this extends the same principle to the
+  structural graph itself).
+
+### Open questions (not to be resolved by the agent)
+
+1. **Utility-statistic formula.** "Contribution to loss/gradient,
+   optionally co-activity" is a description, not a formula — e.g. an EMA
+   of `|dL/dw_ij|`, of the message/`c_ij` magnitude actually carried, a
+   measure of `a_ij(t)` co-activity over recent steps, or some
+   combination, and with what decay/window.
+2. **Growth-score formula.** How association compatibility (`phi_i .
+   phi_j`) and the accumulated utility/activity statistics combine into
+   one score for ranking candidates — a fixed combination (e.g. product,
+   sum) or a small shared learned function in the style of `F_need`/
+   `F_offer` (§5 Part III)?
+3. **`w_ij`'s parameterization.** This is the one with real engineering
+   stakes: a literal free scalar `nn.Parameter` per currently-existing
+   edge needs the parameter *tensor itself* to grow/shrink as edges are
+   added/pruned — unusual for this codebase's convention of fixed-shape
+   parameters and shared functions, and it interacts with the optimizer
+   state (Adam moments for a pruned parameter; init for a newly grown
+   one). The alternative: a small **persistent per-cell "structural
+   address" embedding** (fixed-size, always exists, trained like any
+   other parameter) with `w_ij = g(addr_i, addr_j)` computed by a shared
+   function only for existing edges — sidesteps dynamic parameter
+   allocation entirely, closer to how every other CellV1 mechanism
+   avoids per-pair free parameters (§2: "no permanent per-pair connection
+   parameters," CellV0's `BeliefLayer` explicitly named as the thing
+   CellV1 moved away from). Not decided.
+4. **Aggregation formula.** Does `learned_local_association_fusion`
+   (§15) carry over unchanged, just with its sums restricted to each
+   cell's structural neighbor set instead of the whole population (same
+   math, smaller domain), or does `c_ij(t)` change the fusion formula
+   itself?
+5. **Edge budget and bootstrap topology.** Target average degree `k`
+   (analogous to §11's `pool_size`, §13's `R`), and what a freshly
+   encoded cell population's structural graph looks like *before* the
+   first plasticity event — empty (bootstrapped entirely by early growth
+   events) or seeded with one initial growth pass before training starts?
+6. **Plasticity schedule.** What "occasionally" means concretely (every
+   `K` optimizer steps? every `K` refinement steps `T`? epoch
+   boundaries?), and how many edges are added/pruned per event.
+7. **Relationship to existing local/global routing (§5 Parts I & III)
+   and the global field (§14).** The user's original framing suggested
+   local-vs-global should simply fall out of short- vs. long-range edges
+   in *one* substrate, not a separate mechanism — does this proposal
+   replace §5/§14's routing split entirely, or run alongside it?
+
+### Relationship to prior variants
+
+Builds directly on §15's `AssociationFunction` for `a_ij(t)` — not a new
+kernel. Reframes, rather than replaces, the question §11 (LSH candidate
+pools) and §13 (RFF field) each answered: those found "who is dynamically
+similar right now" from scratch every step; this asks "who is my
+*persistent* structural neighbor, and how strongly are we currently
+talking." §11's ANN-style candidate search returns as a sub-component
+(step 3 above) but now searches learned `phi`-space for a slow structural
+decision, not a per-step routing decision.
+
+## 17. Revision history
 
 - 2026-09-01: Proposal captured from a design conversation with the user —
   self-organizing, input-dependent belief graph; no fixed
@@ -930,3 +1075,21 @@ fixed `num_steps`, a known gap against the fuller spec, not a bug.
   sweep, found accuracy matching CellV0.1 within seed noise at every
   level and no collapse across any of 12 (level, seed) combinations --
   currently the more reliable of the two field-style CellV1 variants.
+- 2026-09-03 (later still): User relayed a design conversation proposing
+  a pivot for Hypothesis B, grounded in cell-assembly theory (Buzsáki):
+  stop dynamically rebuilding the graph every step (§1-§15's shared
+  approach) and instead separate a persistent, sparse, slowly-learned
+  structural connectivity `w_ij` from a dynamic functional gate `a_ij(t)`
+  (reusing §15's `AssociationFunction`), with `c_ij(t) = w_ij * a_ij(t)`.
+  Across two follow-up turns the user specified structural plasticity as
+  occasional (not per-step) growth/pruning: new-edge candidates proposed
+  via approximate nearest-neighbor search over the *learned* `phi`-space
+  (ANN/LSH as an indexing algorithm only, never the growth criterion
+  itself), an exact learned growth score run only on that small candidate
+  pool, and existing edges pruned by a running utility statistic. Captured
+  as CellV1.5 (§16) -- explicitly proposed, not finalized; several open
+  questions listed (utility/growth-score formulas, how `w_ij` is
+  parameterized given edges are added/removed at runtime, the aggregation
+  formula's exact domain, edge budget/bootstrap topology, plasticity
+  schedule, and the relationship to existing local/global routing). No
+  code written.
