@@ -127,8 +127,8 @@ def test_bootstrap_topology_is_identical_across_arms() -> None:
     plastic" would also be "different bootstrap draw" (§16.8)."""
     models, _ = _models()
     x, y = _fake_data(32)
-    _, frozen_boot = _train(models["cellv1.5_frozen"], x, y, plasticity=False, max_steps=1)
-    _, plastic_boot = _train(models["cellv1.5_plastic"], x, y, plasticity=True, max_steps=1)
+    _, frozen_boot, _ = _train(models["cellv1.5_frozen"], x, y, plasticity=False, max_steps=1)
+    _, plastic_boot, _ = _train(models["cellv1.5_plastic"], x, y, plasticity=True, max_steps=1)
     assert frozen_boot is not None and plastic_boot is not None
     assert torch.equal(frozen_boot, plastic_boot)
 
@@ -156,10 +156,10 @@ def test_frozen_arm_never_rewires_and_plastic_arm_does() -> None:
     models, _ = _models(config=config)
     x, y = _fake_data(64)
 
-    frozen_stats, frozen_boot = _train(
+    frozen_stats, frozen_boot, frozen_end = _train(
         models["cellv1.5_frozen"], x, y, plasticity=False, max_steps=60, config=config
     )
-    plastic_stats, plastic_boot = _train(
+    plastic_stats, plastic_boot, plastic_end = _train(
         models["cellv1.5_plastic"], x, y, plasticity=True, max_steps=60, config=config
     )
 
@@ -169,6 +169,10 @@ def test_frozen_arm_never_rewires_and_plastic_arm_does() -> None:
     assert torch.equal(models["cellv1.5_frozen"].core.edges.edge_index, frozen_boot)
     # The plastic arm's is not -- that is the independent variable working.
     assert _edge_set(models["cellv1.5_plastic"].core.edges.edge_index) != _edge_set(plastic_boot)
+    # The end-of-training snapshot is taken before the best checkpoint is
+    # restored, so it can differ from the restored topology.
+    assert torch.equal(frozen_end, frozen_boot)
+    assert _edge_set(plastic_end) != _edge_set(plastic_boot)
 
 
 def test_plasticity_never_breaks_the_in_degree_one_guarantee() -> None:
@@ -273,7 +277,7 @@ def test_a_frozen_topology_reports_zero_structural_change() -> None:
     models, _ = _models()
     x, y = _fake_data(64)
     frozen = models["cellv1.5_frozen"]
-    _, bootstrap = _train(frozen, x, y, plasticity=False, max_steps=40)
+    _, bootstrap, _ = _train(frozen, x, y, plasticity=False, max_steps=40)
     scalars, _ = _structural_metrics(frozen, bootstrap, x[:16], torch.device("cpu"), seed=0)
     assert scalars["structural_edges_changed_fraction"] == pytest.approx(0.0)
     assert scalars["bootstrap_edges_retained_fraction"] == pytest.approx(1.0)
@@ -370,6 +374,10 @@ def test_run_records_every_requested_metric(tmp_path) -> None:
             "in_degree_max",
             "in_degree_gini",
             "out_degree_mean",
+            "structural_edges_changed_fraction_at_end",
+            "bootstrap_edges_retained_fraction_at_end",
+            "edges_changed_between_best_and_end",
+            "n_edges_at_end",
             "plasticity_events_total",
             "entered_freeze_window",
         ):

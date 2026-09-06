@@ -483,11 +483,19 @@ def _structural_metrics(
     device: torch.device,
     seed: int,
     batch_size: int = 64,
+    end_of_training_edge_index: torch.Tensor | None = None,
 ) -> tuple[dict[str, float], dict[str, np.ndarray]]:
     """Everything the user asked to be recorded about the substrate,
     measured on the *restored best-validation checkpoint* -- the same
     weights and the same topology that produced the reported test R^2,
     not wherever training happened to stop.
+
+    `end_of_training_edge_index`, when given, adds the same
+    change-vs-bootstrap comparison for the topology training *ended* on
+    (suffixed `_at_end`). The two differ whenever the best checkpoint
+    predates later plasticity events, which is common under early
+    stopping -- reporting only one would either understate how far
+    rewiring got or describe a substrate the reported R^2 never used.
 
     Returns `(scalars, arrays)`; `arrays` is saved to `results/raw` so the
     degree distribution and per-edge use rates can be re-analyzed without
@@ -521,6 +529,26 @@ def _structural_metrics(
     scalars.update(_degree_summary(in_degree, "in_degree"))
     scalars.update(_degree_summary(out_degree, "out_degree"))
 
+    if end_of_training_edge_index is not None:
+        end_set = _edge_set(end_of_training_edge_index)
+        n_end = len(end_set)
+        scalars.update(
+            {
+                "n_edges_at_end": float(n_end),
+                "structural_edges_changed_fraction_at_end": (
+                    len(end_set - boot_set) / n_end if n_end else float("nan")
+                ),
+                "bootstrap_edges_retained_fraction_at_end": (
+                    len(end_set & boot_set) / n_boot if n_boot else float("nan")
+                ),
+                # How much the substrate moved on *after* the checkpoint
+                # the reported R^2 came from.
+                "edges_changed_between_best_and_end": (
+                    len(end_set - final_set) / n_end if n_end else float("nan")
+                ),
+            }
+        )
+
     use = _functional_edge_use(model, x_eval, device, batch_size=batch_size, seed=seed)
     arrays: dict[str, np.ndarray] = {
         "in_degree": in_degree,
@@ -530,6 +558,8 @@ def _structural_metrics(
         "final_edge_utility": model.core.edges.utility.detach().cpu().numpy(),
         "final_edge_age": model.core.edges.age.detach().cpu().numpy(),
     }
+    if end_of_training_edge_index is not None:
+        arrays["end_of_training_edge_index"] = end_of_training_edge_index.numpy()
     for key, value in list(use.items()):
         if key.startswith("_edge_use_rate_array"):
             arrays["edge_use_rate" + key[len("_edge_use_rate_array") :]] = value
@@ -578,7 +608,10 @@ def _train_until_convergence_structural(
     bookkeeping; it changes no parameter and no gradient), only
     `maybe_run_structural_plasticity` is withheld.
 
-    Returns `(convergence_stats, bootstrap_edge_index)`."""
+    Returns `(convergence_stats, bootstrap_edge_index,
+    end_of_training_edge_index)` -- the last taken before the best
+    checkpoint is restored, so "how far did rewiring get" and "what
+    topology produced the reported R^2" stay separable."""
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     loader = DataLoader(
@@ -659,6 +692,15 @@ def _train_until_convergence_structural(
                 break
 
     total_wall_clock = time.perf_counter() - start
+    # Snapshot the topology training actually ended on, *before* restoring
+    # the best checkpoint. "Final" is otherwise ambiguous: the best
+    # checkpoint can predate most of the plasticity events, so its
+    # substrate understates how far rewiring got. Both are reported --
+    # the best-checkpoint one describes the model that produced the R^2,
+    # the end-of-training one describes where the schedule was heading.
+    end_of_training_edge_index = (
+        model.core.edges.edge_index.detach().cpu().clone() if is_structural else None
+    )
     if best_state is not None:
         _restore_model_state(model, best_state)
 
@@ -679,6 +721,7 @@ def _train_until_convergence_structural(
             ),
         },
         bootstrap_edge_index,
+        end_of_training_edge_index,
     )
 
 
@@ -798,7 +841,7 @@ def run_structural_comparison(
 
     for arch_name, model in models.items():
         is_structural = arch_name in CELLV1_5_ARCHITECTURES
-        convergence, bootstrap_edge_index = _train_until_convergence_structural(
+        convergence, bootstrap_edge_index, end_edge_index = _train_until_convergence_structural(
             model,
             loss_fn,
             x_train,
@@ -839,6 +882,7 @@ def run_structural_comparison(
                 device,
                 seed=seed,
                 batch_size=batch_size,
+                end_of_training_edge_index=end_edge_index,
             )
             for name, value in scalars.items():
                 results[f"{arch_name}__{name}"] = value

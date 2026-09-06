@@ -68,7 +68,9 @@ from structural_harness import (  # noqa: E402
 # substrate to measure), so the printer skips them for that arm.
 _SUBSTRATE_KEYS = (
     "structural_edges_changed_fraction",
+    "structural_edges_changed_fraction_at_end",
     "bootstrap_edges_retained_fraction",
+    "edges_changed_between_best_and_end",
     "edge_use_rate_mean__tau1.0",
     "edges_input_dependent_fraction__tau1.0",
     "edges_never_used_fraction__tau1.0",
@@ -182,7 +184,10 @@ def main() -> None:
                         f"\n        edges={int(r[f'{arch}__n_edges_final'])} "
                         "changed_vs_bootstrap="
                         f"{r[f'{arch}__structural_edges_changed_fraction']:.4f} "
-                        f"events={r[f'{arch}__plasticity_events_at_best_checkpoint']} "
+                        "changed_at_end="
+                        f"{r[f'{arch}__structural_edges_changed_fraction_at_end']:.4f} "
+                        f"events={r[f'{arch}__plasticity_events_at_best_checkpoint']}"
+                        f"/{r[f'{arch}__plasticity_events_total']} "
                         f"use_rate={r[f'{arch}__edge_use_rate_mean__tau1.0']:.4f} "
                         f"input_dep={r[f'{arch}__edges_input_dependent_fraction__tau1.0']:.4f} "
                         f"jaccard={r[f'{arch}__mean_pairwise_jaccard__tau1.0']:.4f} "

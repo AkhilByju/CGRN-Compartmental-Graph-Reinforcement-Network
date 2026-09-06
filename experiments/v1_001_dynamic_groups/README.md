@@ -178,6 +178,25 @@ the discovered graph visibly differs input-to-input and step-to-step
 doing this without `T` separate layers. See `docs/architecture_v1.md`'s
 research-log entry for this experiment once it's run.
 
+## Later experiments filed in this folder
+
+This folder accumulated the CellV1 line's comparisons rather than
+splitting one per variant -- each reuses this experiment's task, splits,
+convergence protocol, and parameter-matching helpers, and changes only the
+arms. `harness.py` hosts them all (`run_task`, `run_field_task`,
+`run_global_field_comparison`, `run_convergence_field_comparison`,
+`run_convergence_association_comparison`), with one runner script apiece.
+
+The exception is **CellV1.5**, whose comparison lives in its own module
+(`structural_harness.py`, run by `run_structural_comparison.py`) because
+it needs training-loop machinery none of the others do -- an explicit
+bootstrap, a per-optimizer-step plasticity hook, and checkpointing that
+survives a runtime-resized edge registry. `harness.py` is untouched by it.
+See **`README_structural.md`** for that experiment: three arms
+(`cellv0.1` / CellV1.5 frozen / CellV1.5 plastic) isolating whether §16's
+slow structural plasticity earns its keep, on `hard`/`very_hard`
+`dynamic_groups_global`.
+
 ## After this experiment: don't immediately modify CellV1
 
 Per the user's spec, this experiment should decide *what part* needs
