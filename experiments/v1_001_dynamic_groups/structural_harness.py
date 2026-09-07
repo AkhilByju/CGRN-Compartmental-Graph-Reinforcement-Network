@@ -573,6 +573,25 @@ def _structural_metrics(
 # ---------------------------------------------------------------------------
 
 
+def _longest_interior_plateau(history: list[tuple[int, float]], val_every: int) -> int:
+    """The longest stretch of validation checks that produced no new best
+    and was *followed* by one -- i.e. the longest plateau the run actually
+    broke out of. A patience below this value would have stopped the run
+    prematurely, so it is the empirical lower bound on how much patience
+    this architecture/task needs. The terminal plateau is excluded: it did
+    not break out, so it says nothing about how long a real one can be."""
+    longest, current = 0, 0
+    best = -float("inf")
+    for _step, value in history:
+        if value > best:
+            best = value
+            longest = max(longest, current)
+            current = 0
+        else:
+            current += val_every
+    return longest
+
+
 def _train_until_convergence_structural(
     model: torch.nn.Module,
     loss_fn,
@@ -643,6 +662,12 @@ def _train_until_convergence_structural(
     best_plasticity_events = 0
     steps_since_improvement = 0
     plasticity_events = 0
+    # The full validation curve. Cheap (one float per `val_every` steps)
+    # and the only way to tell "stopped improving" from "stopped early on
+    # a plateau" after the fact -- which is the exact failure mode the
+    # patience setting exists to avoid, and which a scalar
+    # steps_to_convergence cannot distinguish.
+    val_history: list[tuple[int, float]] = []
 
     start = time.perf_counter()
     step = 0
@@ -677,6 +702,8 @@ def _train_until_convergence_structural(
                 metric_fn = r_squared if regression else accuracy_metric
                 val_metric = metric_fn(val_pred, y_val_dev)
             model.train()
+
+            val_history.append((step, float(val_metric)))
 
             if val_metric > best_val:
                 best_val = val_metric
@@ -719,6 +746,12 @@ def _train_until_convergence_structural(
             "entered_freeze_window": bool(
                 is_structural and plasticity_enabled and step > freeze_start
             ),
+            # Longest run of consecutive validation checks with no new best,
+            # *excluding* the terminal plateau that triggered the stop. If
+            # this approaches `patience_steps`, the patience was only just
+            # sufficient and a longer plateau would have been cut short.
+            "longest_interior_plateau_steps": _longest_interior_plateau(val_history, val_every),
+            "val_history": val_history,
         },
         bootstrap_edge_index,
         end_of_training_edge_index,
@@ -909,7 +942,10 @@ def run_structural_comparison(
                 "val_every": val_every,
                 "patience_steps": patience_steps,
                 "structural_plasticity_enabled": arch_name == "cellv1.5_plastic",
-                **{k: v for k, v in convergence.items()},
+                # `val_history` is an observation, not configuration --
+                # including it would make `make_run_id`'s content hash
+                # differ for two identically-configured runs.
+                **{k: v for k, v in convergence.items() if k != "val_history"},
             },
         )
         record = RunRecord(
