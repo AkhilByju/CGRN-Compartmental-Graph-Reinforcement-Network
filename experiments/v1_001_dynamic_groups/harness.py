@@ -79,6 +79,7 @@ from src.evaluation.regression import mae as mae_metric  # noqa: E402
 from src.evaluation.regression import r_squared  # noqa: E402
 from src.evaluation.regression import rmse as rmse_metric  # noqa: E402
 from src.models.architecture_v0.belief_network import BeliefNetwork  # noqa: E402
+from src.models.architecture_v1.assembly_model import PrecisionRegulatedAssemblyNetwork  # noqa: E402
 from src.models.architecture_v1.association_model import LearnedAssociationField  # noqa: E402
 from src.models.architecture_v1.field_model import SelfOrganizingRefinementField  # noqa: E402
 from src.models.architecture_v1.lsh import gather_scalar, lookup_value  # noqa: E402
@@ -136,6 +137,30 @@ GLOBAL_DIM = 16  # d_g, the user's suggested "8 or 16"
 # why this redesign was necessary -- not deleted, not modified.
 ASSOCIATION_ARCHITECTURES: tuple[str, ...] = ("cellv0.1", "association_local_global_t2")
 ASSOC_DIM = 32  # D, the user's suggested "16-64," matching learned_association.py's own default
+
+# CellV1.6 (Precision-Regulated Assembly, docs/architecture_v1.md Sec 17)
+# -- `cellv0.1` vs `cellv1_6` only, per the user's first-validation spec
+# (2026-09-06). `cellv1_6` is `cellv0.1`'s exact 2-BeliefLayer backbone
+# plus one 34-param PrecisionRegulatedAssemblyGate between the layers, so
+# there is no width to "match" -- both arms use the same `hidden_cells`,
+# sized to the SAME per-level parameter budget the CellV0.1 complexity
+# experiment (`run_complexity_scaling_association.py`) used: the param
+# count of `association_local_global_t2` at that level, which was the
+# matching target there. Deterministic (fixed architecture); taken from
+# that experiment's raw RunRecords rather than rebuilding the model.
+ASSEMBLY_ARCHITECTURES: tuple[str, ...] = ("cellv0.1", "cellv1_6")
+ASSEMBLY_REFERENCE_PARAM_BUDGET: dict[str, int] = {
+    "easy": 3403,
+    "medium": 3451,
+    "hard": 3547,
+    "very_hard": 3739,
+}
+ASSEMBLY_DIAGNOSTIC_KEYS: tuple[str, ...] = (
+    "assembly_active_fraction",
+    "assembly_mean_participation",
+    "assembly_delta",
+    "assembly_population_log_precision",
+)
 
 # The three scales the user asked to sweep -- T fixed at 6 for all of them.
 V1_SCALES: dict[str, int] = {"V1-S0": 128, "V1-S1": 256, "V1-S2": 512}
@@ -362,6 +387,7 @@ def _train_until_convergence(
     val_every: int = 100,
     patience_steps: int = 500,
     max_steps: int = 5_000,
+    capture_final_state: bool = False,
 ) -> dict[str, float | int]:
     """Early-stopping training loop, replacing `_train`'s fixed step
     count for the complexity-scaling comparison
@@ -381,7 +407,14 @@ def _train_until_convergence(
     total steps/wall-clock actually spent (best-checkpoint time plus the
     patience tail) -- the efficiency question the user's protocol is
     specifically after, not just whether the architecture eventually
-    gets there."""
+    gets there.
+
+    `capture_final_state=True` additionally returns `"final_state"` -- a
+    detached CPU-free clone of the model's parameters at the point
+    training *stopped* (before the best-checkpoint restore) -- so a
+    caller can inspect the end-of-training regime, not just the best
+    checkpoint. Off by default (an extra state-dict clone), no effect on
+    the loop itself."""
     model.to(device)
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -433,16 +466,24 @@ def _train_until_convergence(
                 break
 
     total_wall_clock = time.perf_counter() - start
+    final_state = (
+        {k: v.detach().clone() for k, v in model.state_dict().items()}
+        if capture_final_state
+        else None
+    )
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    return {
+    result: dict[str, float | int] = {
         "steps_to_convergence": best_step,
         "wall_clock_to_convergence_seconds": best_wall_clock,
         "total_steps_run": step,
         "total_wall_clock_seconds": total_wall_clock,
         "best_val_metric": best_val,
     }
+    if capture_final_state:
+        result["final_state"] = final_state  # type: ignore[assignment]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1571,6 +1612,216 @@ def run_convergence_association_comparison(
             inference_wall_clock_seconds=inference_wall_clock,
             validation_metrics={"best": convergence["best_val_metric"]},
             test_metrics=test_metrics,
+            git_commit=get_git_commit(),
+            checkpoint_path=None,
+        )
+        write_run_record(record, Path(results_dir))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# CellV1.6 -- Precision-Regulated Assembly (docs/architecture_v1.md Sec 17)
+# First validation experiment: cellv0.1 vs cellv1_6, nothing else.
+# ---------------------------------------------------------------------------
+
+
+def _read_assembly_diagnostics(model: PrecisionRegulatedAssemblyNetwork) -> dict[str, float]:
+    """The four gate diagnostics from `model`'s most recent forward pass,
+    as plain floats (they are stored as detached 0-dim tensors)."""
+    diag = model.last_assembly_diagnostics
+    return {k: float(diag[k].item()) for k in ASSEMBLY_DIAGNOSTIC_KEYS}
+
+
+def _build_assembly_comparison_models(
+    complexity_level: str,
+    in_features: int,
+    out_features: int,
+    seed: int,
+) -> tuple[dict[str, torch.nn.Module], dict[str, int | str]]:
+    """`cellv0.1` and `cellv1_6`, both at the SAME `hidden_cells` -- sized
+    to `ASSEMBLY_REFERENCE_PARAM_BUDGET[complexity_level]` via
+    `_match_belief_hidden_cells`, the identical matching call
+    `_build_association_comparison_models` makes, just against the budget
+    the CellV0.1 complexity experiment already established for this level
+    rather than a freshly-built model's count. `cellv1_6` is that exact
+    `BeliefNetwork` backbone plus one 34-param gate; there is no separate
+    width to match."""
+    set_seed(seed)
+    budget = ASSEMBLY_REFERENCE_PARAM_BUDGET[complexity_level]
+    hidden_cells = _match_belief_hidden_cells(budget, in_features, out_features)
+
+    cellv0_1 = BeliefNetwork(in_features, hidden_cells, out_features, aggregation="scale_stable_precision")
+    cellv1_6 = PrecisionRegulatedAssemblyNetwork(in_features, hidden_cells, out_features)
+
+    models: dict[str, torch.nn.Module] = {"cellv0.1": cellv0_1, "cellv1_6": cellv1_6}
+    sizing = {
+        "reference_param_budget": budget,
+        "hidden_cells": hidden_cells,
+        "cellv0.1__params": count_parameters(cellv0_1),
+        "cellv1_6__params": count_parameters(cellv1_6),
+        "cellv1_6__param_increase": count_parameters(cellv1_6) - count_parameters(cellv0_1),
+    }
+    return models, sizing
+
+
+def run_convergence_assembly_comparison(
+    task: str,
+    complexity_level: str,
+    seed: int,
+    batch_size: int = 64,
+    lr: float = 1e-2,
+    n_train: int = 3_000,
+    n_val: int = 500,
+    n_test: int = 500,
+    val_every: int = 100,
+    patience_steps: int = 500,
+    max_steps: int = 5_000,
+    results_dir: str | Path = "results/raw",
+    n_objects: int = DEFAULT_N_OBJECTS,
+    k_min: int = 2,
+    k_max: int = 5,
+) -> dict:
+    """`cellv0.1` vs `cellv1_6` on `task` (`dynamic_groups_global`),
+    trained with the identical early-stopping protocol
+    `run_convergence_association_comparison` uses -- same optimizer
+    (AdamW), same `lr`/`batch_size`/split sizes/`val_every`/
+    `patience_steps`/`max_steps`, same best-validation checkpoint
+    selection, same `dynamic_groups` "features already well-scaled, do not
+    standardize" handling. No special learning rate or schedule for
+    `cellv1_6`.
+
+    Records, per run: best-validation checkpoint step, test R², total
+    training steps, total wall-clock, parameter count. For `cellv1_6`
+    additionally: the four `PrecisionRegulatedAssemblyGate` diagnostics
+    (`assembly_active_fraction`/`assembly_mean_participation`/
+    `assembly_delta`/`assembly_population_log_precision`) at three points
+    -- `__init` (before any training), `__best` (at the best-validation
+    checkpoint), `__end` (at the point training stopped, before the
+    checkpoint restore) -- each measured on the full test set."""
+    if task not in TASKS:
+        raise ValueError(f"Unknown task '{task}'. Expected one of {TASKS}.")
+
+    set_seed(seed)
+    device = get_device()
+    regression = _is_regression(task)
+    is_dynamic_groups = task in OBJECT_SEEDED_TASKS
+
+    train_split, val_split, test_split = _build_splits(
+        task, seed, n_train, n_val, n_test, n_objects=n_objects, k_min=k_min, k_max=k_max
+    )
+    if is_dynamic_groups:
+        x_train, y_train, _ = train_split
+        x_val, y_val, _ = val_split
+        x_test, y_test, _ = test_split
+    else:
+        x_train, y_train = train_split
+        x_val, y_val = val_split
+        x_test, y_test = test_split
+        x_train, x_val, x_test = standardize(x_train, x_val, x_test)
+
+    in_features = x_train.shape[1]
+    out_features = 1 if regression else 2
+    loss_fn = torch.nn.MSELoss() if regression else torch.nn.CrossEntropyLoss()
+    headline = "r2" if regression else "accuracy"
+
+    models, sizing = _build_assembly_comparison_models(complexity_level, in_features, out_features, seed)
+
+    results: dict[str, float | int | str] = {
+        "task": task,
+        "complexity_level": complexity_level,
+        "seed": seed,
+        "n_objects": n_objects,
+        "headline": headline,
+        **sizing,
+    }
+
+    x_test_dev, y_test_dev = x_test.to(device), y_test.to(device)
+
+    for arch_name, model in models.items():
+        model.to(device)
+        is_assembly = arch_name == "cellv1_6"
+
+        if is_assembly:
+            model.eval()
+            with torch.no_grad():
+                model(x_test_dev)
+            for k, v in _read_assembly_diagnostics(model).items():
+                results[f"{arch_name}__{k}__init"] = v
+
+        convergence = _train_until_convergence(
+            model, loss_fn, x_train, y_train, x_val, y_val, device, seed, regression,
+            batch_size, lr, val_every=val_every, patience_steps=patience_steps, max_steps=max_steps,
+            capture_final_state=is_assembly,
+        )
+
+        model.eval()
+        with torch.no_grad():
+            infer_start = time.perf_counter()
+            test_pred = model(x_test_dev)
+            inference_wall_clock = time.perf_counter() - infer_start
+            test_metrics = _compute_metrics(regression, test_pred, y_test_dev)
+
+        final_state = convergence.pop("final_state", None)
+        if is_assembly:
+            for k, v in _read_assembly_diagnostics(model).items():
+                results[f"{arch_name}__{k}__best"] = v
+            if final_state is not None:
+                model.load_state_dict(final_state)
+                model.eval()
+                with torch.no_grad():
+                    model(x_test_dev)
+                for k, v in _read_assembly_diagnostics(model).items():
+                    results[f"{arch_name}__{k}__end"] = v
+
+        for name, value in test_metrics.items():
+            results[f"{arch_name}__{name}"] = value
+        results[f"{arch_name}__inference_wall_clock_seconds"] = inference_wall_clock
+        for name, value in convergence.items():
+            results[f"{arch_name}__{name}"] = value
+
+        config = ExperimentConfig(
+            experiment_id="v1_001_dynamic_groups_assembly_convergence",
+            architecture=arch_name,
+            dataset=task,
+            seed=seed,
+            optimizer="adamw",
+            learning_rate=lr,
+            batch_size=batch_size,
+            max_steps=max_steps,
+            extra={
+                **sizing,
+                "complexity_level": complexity_level,
+                "n_objects": n_objects,
+                "val_every": val_every,
+                "patience_steps": patience_steps,
+                **convergence,
+            },
+        )
+        run_id = make_run_id(config)
+        assembly_test_extra = (
+            {f"assembly__{k}__best": results[f"{arch_name}__{k}__best"] for k in ASSEMBLY_DIAGNOSTIC_KEYS}
+            if is_assembly
+            else {}
+        )
+        record = RunRecord(
+            run_id=run_id,
+            experiment_id=config.experiment_id,
+            architecture=arch_name,
+            config=config.to_dict(),
+            parameter_count=count_parameters(model),
+            dataset=task,
+            seed=seed,
+            optimizer=config.optimizer,
+            learning_rate=lr,
+            steps_completed=convergence["total_steps_run"],
+            examples_or_tokens_seen=convergence["total_steps_run"] * batch_size,
+            refinement_iterations=None,
+            approximate_flops=None,
+            train_wall_clock_seconds=convergence["total_wall_clock_seconds"],
+            inference_wall_clock_seconds=inference_wall_clock,
+            validation_metrics={"best": convergence["best_val_metric"]},
+            test_metrics={**test_metrics, **assembly_test_extra},
             git_commit=get_git_commit(),
             checkpoint_path=None,
         )
