@@ -1807,3 +1807,87 @@ matched-parameter comparison, and separately, `EdgeRegistry`'s
 `state_dict()`/`load_state_dict()` limitation (round-trips only when
 edge count matches) would need addressing before checkpoint-resume
 support is needed for a real training run.
+
+## 2026-09-06 — CellV1.6 implemented: Precision-Regulated Assembly (unevaluated)
+
+**Context:** The user specified CellV1.6 as an *implementation task
+only* ("Do not redesign the architecture, add alternative mechanisms, or
+perform literature research"). Unlike CellV1.1–1.5, it is not part of
+the `(mu, e, u, z)` dynamic-graph line — it goes back to the frozen
+CellV0.1 `BeliefNetwork` (`src/models/architecture_v0/belief_network.py`:
+plain `(mu, e, u)`, `scale_stable_precision` fusion, linear readout) and
+adds exactly one input-dependent population-competition gate between its
+two layers. Full spec now in `docs/architecture_v1.md` §17.
+
+**What was built, following the spec exactly:**
+
+- `assembly_gate.py::PrecisionRegulatedAssemblyGate`. Per cell:
+  `log_precision_i = log(e_i + eps) - log(u_i^2 + eps)`; `drive_i =
+  F_part([mu_i, log_precision_i])` where `F_part` is ONE shared
+  `2 -> 8 -> 1` SiLU MLP (no per-cell network); per-example
+  standardization `z_i = (drive_i - mean)/sqrt(var + eps)`; population
+  confidence `C = mean(log_precision)`; window `delta = 0.05 +
+  softplus(width_bias - softplus(kappa_raw) * C)` (two learned scalars);
+  `participation_i = relu(1 - (z_max - z_i)/(delta + eps))`, naturally in
+  `[0, 1]`, max-drive cell exactly 1, cells > `delta` below the max
+  exact 0, never renormalized. No detach anywhere.
+- `assembly_model.py::PrecisionRegulatedAssemblyNetwork`. `BeliefNetwork`
+  with the gate spliced between `layer1` and `layer2`; `use_assembly_gate`
+  flag; `last_assembly_diagnostics` (detached: `assembly_active_fraction`,
+  `assembly_mean_participation`, `assembly_delta`,
+  `assembly_population_log_precision`).
+- The **only** edit to existing code: `integration.BeliefLayer.forward`
+  gained an optional `source_participation` arg. `None` (every existing
+  call site) → byte-for-byte identical to before. Given →
+  `g_effective[b, j, i] = g[j, i] * participation[b, i]`, then the
+  unchanged scale-stable precision equations. Verified: full suite was
+  334/334 before, still 334 of those passing after.
+
+**Two implementation-choice defaults, flagged in §17.3 and the module
+docstring:**
+
+- `F_part`'s output `Linear` has `bias=False`. Because the drive is
+  immediately per-example standardized (invariant to a uniform additive
+  constant), an output bias is a permanently zero-gradient parameter —
+  the same reason `bias=False` precedes BatchNorm. Caught by the
+  "gradients reach every F_part parameter" test failing on
+  `participation_drive.2.bias` with an *exact* zero; removed rather than
+  kept as dead weight. `F_part` is 32 params; total added over CellV0.1
+  is **34, constant** (`+ kappa_raw + width_bias`), independent of every
+  dimension.
+- `width_bias_init = 3.0` / `kappa_raw_init = 0.0` → initial `delta` ~2.5–3
+  in standardized-drive units, so most cells participate at init and the
+  network learns to sparsify (mirrors `WriteGateFunction`'s near-off
+  bias-init convention, §12). Not a tuned assembly-size target — and per
+  the spec there is no auxiliary sparsity loss, target support %, L0
+  penalty, or fixed winner count anywhere; "activates almost every cell"
+  is an allowed empirical result.
+
+**Status:** Implemented and unit-tested — 26 new tests
+(`test_assembly_gate.py` 18, `test_assembly_model.py` 8), full suite
+334 → 360, all passing. Covered: shape/dtype/device incl. MPS (the
+first MPS-gated tests in the repo — they run, not skip, on this
+hardware); participation finite and in `[0, 1]`; max-drive cell = 1;
+exact zero outside the learned window; no fixed winner count (two
+populations, different active counts); `delta` non-increasing when
+evidence rises or uncertainty falls uniformly; standardized `z`
+invariant to positive affine changes of the drive logits; gradients
+reach `mu`/`e`/`u`/`F_part`/`kappa_raw`/`width_bias`; gate-off and
+participation-ones both reproduce CellV0.1 to `torch.equal` /
+`atol=1e-6`; no `[N, N]` tensor (`TorchDispatchMode` max-numel check)
++ linear memory scaling (8×-cells timing); 30-step AdamW smoke run
+(loss 1.05 → 0.54, no NaNs). Measured gate-only forward overhead:
+0.14–0.24 ms (MPS) / 0.23–1.32 ms (CPU) across batch×n_cells
+64²–256². **No experiment has been run** — correctness-tested only,
+the same bar every CellV1 variant was held to before its first run.
+
+**Why:** Every formula is the user's, specified in one turn as an
+implementation task. The two flagged defaults are engineering
+realizations (a dead-parameter removal, a bias-init) not architecture
+decisions.
+
+**Follow-up:** Not yet decided — a matched-parameter comparison against
+`cellv0.1` (and the MLP baseline) on a task where input-dependent
+assembly selection could plausibly matter would be the natural first
+experiment. Until then CellV1.6 is proposed-and-implemented, unevaluated;
+do not describe it as working.
