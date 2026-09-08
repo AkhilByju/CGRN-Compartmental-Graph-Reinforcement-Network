@@ -66,7 +66,7 @@ tested (45 tests, including a dense/sparse consistency check and a linear
 edge-count scaling check), and pass one short training smoke test. No
 experiment run yet.
 
-**CellV1.6 (§17, PROPOSED AND IMPLEMENTED, unevaluated, 2026-09-06):**
+**CellV1.6 (§17, IMPLEMENTED; first experiment negative, 2026-09-06):**
 Deliberately *not* part of the `(mu, e, u, z)` line above — it returns to
 the frozen CellV0.1 `BeliefNetwork` (plain `(mu, e, u)`, scale-stable
 precision fusion) and inserts exactly one input-dependent population-
@@ -80,8 +80,13 @@ source cell's learned relevance by its participation and runs the
 unchanged fusion equations. No routing, no recurrence, no plasticity, no
 sparsity loss, no fixed winner count. +34 parameters, constant.
 Implemented (`assembly_gate.py`, `assembly_model.py`, one optional-arg
-hook in `architecture_v0/integration.py`), 26 new tests (suite 360/360),
-one AdamW smoke run. **No experiment run** — not validated.
+hook in `architecture_v0/integration.py`), 26 new tests, one AdamW smoke
+run. **First validation experiment (`dynamic_groups_global`,
+hard/very_hard, seeds 0-2, CellV0.1's own convergence protocol and param
+budget): CellV1.6 slightly *underperforms* CellV0.1 at both levels**
+(R² −0.011 to −0.012, ≈1–2 seed-std, cellv0.1 wins 5/6 seed pairs); the
+gate learns a real sparse regime (active fraction 1.0 → 0.55) but it
+doesn't help. Not tuned, not redesigned — negative result stands.
 
 ## 0. Relationship to Architecture V0
 
@@ -1197,19 +1202,32 @@ in-degree invariants hold throughout) -- 45 new tests total
 performance-tested** -- no experiment has been run; see §16's status
 line.
 
-## 17. CellV1.6 — Precision-Regulated Assembly (PROPOSED AND IMPLEMENTED, unevaluated)
+## 17. CellV1.6 — Precision-Regulated Assembly (IMPLEMENTED; first experiment: no improvement over CellV0.1)
 
-**Status: PROPOSED AND IMPLEMENTED, no experiment run.** Specified by the
-user on 2026-09-06 as an *implementation task only* ("Do not redesign the
-architecture, add alternative mechanisms, or perform literature
-research"). Implemented in `src/models/architecture_v1/assembly_gate.py`
-and `assembly_model.py` (§17.7), plus one three-line hook in
-`src/models/architecture_v0/integration.py` (§17.4). Unit-tested (26 new
-tests, full suite 334 → 360) plus a short AdamW smoke-training run --
-"matches the specified formulas, produces valid finite output, adds a
-constant parameter count, builds no `[N, N]` tensor," the same bar every
-other CellV1 variant was held to before its first real run. **Not
-validated** — do not describe it as working until an experiment exists.
+**Status: IMPLEMENTED, one validation experiment run — CellV1.6 does not
+improve on CellV0.1.** Specified by the user on 2026-09-06 as an
+*implementation task only* ("Do not redesign the architecture, add
+alternative mechanisms, or perform literature research"). Implemented in
+`src/models/architecture_v1/assembly_gate.py` and `assembly_model.py`
+(§17.7), plus one hook in `src/models/architecture_v0/integration.py`
+(§17.4). Unit-tested (26 new tests) plus a short AdamW smoke run.
+
+**First validation experiment (2026-09-06, §18 revision history for the
+full trace):** `cellv0.1` vs `cellv1_6` on `dynamic_groups_global`,
+`hard`/`very_hard`, seeds 0/1/2, the exact convergence protocol / param
+budget of the CellV0.1 complexity experiment
+(`run_complexity_scaling_association.py`). CellV1.6 = the matched
+CellV0.1 backbone (6 hidden cells at `hard`, 3 at `very_hard` — the
+matched-parameter budget forces a tiny hidden population) + the 34-param
+gate. Result: **CellV1.6 is slightly worse at both levels** — `hard`
+R² 0.8169±0.0048 vs 0.8287±0.0095, `very_hard` 0.8079±0.0087 vs
+0.8193±0.0047 (cellv0.1 wins 5 of 6 seed pairs). Convergence steps
+comparable; wall-clock 1.10×/1.52× (tiny models, gate is a large fixed
+fraction). The gate *did* learn a non-trivial, stable sparse regime
+(active fraction 1.00 → 0.55, competition window `delta` 4.0 → ~1.6) —
+it just doesn't help here. **Not validated as an improvement.** No
+architecture change or gate tuning was done; the hypothesis stands as
+tested, negative, on this benchmark.
 
 > CellV0.1 / scale-stable precision is frozen and remains the
 > neuron/fusion primitive. CellV1.6 adds one input-dependent population
@@ -1563,3 +1581,47 @@ down, no NaNs). **Correctness only — no experiment has been run.**
   integration contract), full suite 319/319. No experiment run --
   correctness-tested only, matching the bar every other CellV1 variant
   was held to before its first real run.
+- 2026-09-06: User specified CellV1.6 (§17), Precision-Regulated
+  Assembly, as an implementation-only task: keep CellV0.1 / scale-stable
+  precision frozen as the neuron/fusion primitive, add exactly one
+  input-dependent population-competition gate between two CellV0.1
+  layers. Each cell's `(e, u)` set a `log_precision`; a shared
+  `2→8→1` SiLU MLP `F_part` maps `[mu_i, log_precision_i]` to a drive;
+  the drive is per-example standardized; a population-confidence-
+  regulated window `delta = delta_floor + softplus(width_bias − κ·C)`
+  and `participation_i = relu(1 − (z_max − z_i)/(delta + eps))` produce
+  a per-source-cell gain in `[0,1]` that scales the next `BeliefLayer`'s
+  learned relevance. No routing / recurrence / plasticity / sparsity
+  loss / fixed winner count. Implemented in `assembly_gate.py` /
+  `assembly_model.py` + one optional `source_participation` arg on
+  `BeliefLayer.forward` (`None` = unchanged). +34 params, constant. Two
+  flagged implementation-choice defaults: `F_part`'s output `Linear` has
+  `bias=False` (the standardization makes an output bias a permanent
+  zero-gradient parameter — caught by the gradient test), and
+  `width_bias_init=3.0` gives a wide initial window so the net learns to
+  sparsify. 26 tests, full suite 319 → 345.
+- 2026-09-06 (same day): First validation experiment
+  (`experiments/v1_001_dynamic_groups/run_assembly_comparison.py`),
+  scoped by the user: `cellv0.1` vs `cellv1_6` **only**, on the existing
+  `dynamic_groups_global` benchmark at `hard` (96 obj) and `very_hard`
+  (192 obj), seeds 0/1/2, the identical convergence protocol / optimizer
+  / splits / checkpoint selection / parameter budget as the CellV0.1
+  complexity experiment (`run_complexity_scaling_association.py`). No
+  special LR or schedule for `cellv1_6`; no architecture change or gate
+  tuning. `cellv1_6` = the matched CellV0.1 backbone + the 34-param gate;
+  the matched budget forces a tiny hidden population (6 cells at `hard`,
+  3 at `very_hard`). **Result: CellV1.6 slightly underperforms CellV0.1
+  at both levels** — `hard` R² 0.8169±0.0048 vs 0.8287±0.0095,
+  `very_hard` 0.8079±0.0087 vs 0.8193±0.0047; `cellv0.1` wins 5 of 6
+  seed pairs, the sixth a near-tie. Convergence-step ratio 0.86 / 1.09
+  (no consistent difference, wide seed variance); wall-clock ratio
+  1.10× / 1.52× (tiny models — the gate's fixed cost is a large
+  fraction). The `cellv0.1` arm reproduces the complexity experiment's
+  numbers to ≤0.001 R² (protocol fidelity check). The gate **did** learn
+  a non-trivial, stable regime — active fraction 1.00 → 0.55, window
+  `delta` 4.0 → ~1.6, `best` and `end` diagnostics ~identical — it just
+  doesn't improve computation here. Full run table:
+  `docs/research_log.md`'s CellV1.6 experiment entry. The frozen
+  hypothesis ("does dynamic precision-regulated participation improve on
+  CellV0.1 without meaningfully more params / optimization cost") tests
+  **negative** on this benchmark; not repaired, not redesigned.

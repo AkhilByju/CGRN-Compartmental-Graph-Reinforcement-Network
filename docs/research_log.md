@@ -1891,3 +1891,150 @@ decisions.
 assembly selection could plausibly matter would be the natural first
 experiment. Until then CellV1.6 is proposed-and-implemented, unevaluated;
 do not describe it as working.
+
+## 2026-09-06 (same day) — CellV1.6 first validation experiment: no improvement over CellV0.1
+
+**Scope (user's spec):** the first validation experiment for CellV1.6.
+Implementation only — no architecture change, no gate tuning, no
+alternative mechanism. Compare **only** `cellv0.1` and `cellv1_6`, on the
+existing `dynamic_groups_global` benchmark at `hard` (96 objects) and
+`very_hard` (192 objects), seeds 0/1/2. Reuse the CellV0.1 complexity
+experiment's exact protocol
+(`experiments/v1_001_dynamic_groups/run_complexity_scaling_association.py`
+/ `harness.run_convergence_association_comparison`): same dataset
+generation and train/val/test splits (3000/500/500), same optimizer
+family (AdamW, lr 1e-2, batch 64), same convergence-based evaluation
+(`_train_until_convergence`: validate every 100 steps, stop after 500
+steps without val-R² improvement, cap 5000, restore best-val checkpoint),
+same parameter budget. No special LR/schedule for `cellv1_6`.
+
+**Setup.** `cellv1_6` = `cellv0.1`'s exact 2-`BeliefLayer` backbone plus
+one 34-param `PrecisionRegulatedAssemblyGate` between the layers. Both
+arms use the same `hidden_cells`, sized to the same per-level budget the
+complexity experiment used (the param count of
+`association_local_global_t2` there — 3547 at `hard`, 3739 at
+`very_hard`), via the identical `_match_belief_hidden_cells` call. That
+budget, against a 288-/576-dim flattened input, forces a **tiny hidden
+population: 6 cells at `hard`, 3 at `very_hard`** (each hidden `BeliefCell`
+costs ≈2·in_features params in layer 1). So the "population participation
+competition" runs over 3–6 cells, with the max-drive cell always pinned
+to participation 1. This is what the frozen matched-parameter protocol
+dictates; recorded as an obvious structural fact, not interpreted.
+
+Harness additions (`experiments/v1_001_dynamic_groups/`): `harness.py`
+gained `run_convergence_assembly_comparison` /
+`_build_assembly_comparison_models` and `_train_until_convergence` an
+opt-in `capture_final_state` (returns end-of-training params before the
+best-checkpoint restore, so the gate's end-state regime is inspectable);
+`run_assembly_comparison.py` is the entry script. `test_assembly_comparison_harness.py`
+checks `capture_final_state` leaves the trajectory unchanged and the two
+arms are matched +34.
+
+**Protocol-fidelity check.** The `cellv0.1` arm here reproduces the
+complexity experiment's recorded `cellv0.1` numbers to ≤0.001 R²
+(`hard` mean 0.8287 vs 0.8293 there; `very_hard` 0.8193 vs 0.8191) —
+confirms the protocol is faithfully re-run, differences are float/MPS
+nondeterminism.
+
+**The 12 runs** (2 models × 2 levels × 3 seeds), best-val checkpoint step
+/ test R² / total steps / wall-clock (best-val checkpoint restored before
+test eval; param counts constant per level):
+
+| level | seed | model | best step | test R² | total steps | wall (s) | params |
+|---|---|---|---|---|---|---|---|
+| hard | 0 | cellv0.1 | 300 | 0.8393 | 800 | 2.50 | 3547 |
+| hard | 0 | cellv1_6 | 500 | 0.8222 | 1000 | 3.79 | 3581 |
+| hard | 1 | cellv0.1 | 700 | 0.8163 | 1200 | 4.05 | 3547 |
+| hard | 1 | cellv1_6 | 400 | 0.8106 | 900 | 3.39 | 3581 |
+| hard | 2 | cellv0.1 | 400 | 0.8304 | 900 | 2.69 | 3547 |
+| hard | 2 | cellv1_6 | 300 | 0.8180 | 800 | 2.97 | 3581 |
+| very_hard | 0 | cellv0.1 | 700 | 0.8165 | 1200 | 3.59 | 3484 |
+| very_hard | 0 | cellv1_6 | 700 | 0.8172 | 1200 | 4.53 | 3518 |
+| very_hard | 1 | cellv0.1 | 700 | 0.8154 | 1200 | 3.57 | 3484 |
+| very_hard | 1 | cellv1_6 | 1100 | 0.7963 | 1600 | 6.68 | 3518 |
+| very_hard | 2 | cellv0.1 | 800 | 0.8259 | 1300 | 3.98 | 3484 |
+| very_hard | 2 | cellv1_6 | 600 | 0.8101 | 1100 | 5.69 | 3518 |
+
+**Mean ± std (population std, n=3):**
+
+| level | model | test R² | best step | total steps | wall (s) | params |
+|---|---|---|---|---|---|---|
+| hard | cellv0.1 | 0.8287 ± 0.0095 | 467 ± 170 | 967 | 3.08 | 3547 |
+| hard | cellv1_6 | 0.8169 ± 0.0048 | 400 ± 82 | 900 | 3.39 | 3581 (+34) |
+| very_hard | cellv0.1 | 0.8193 ± 0.0047 | 733 ± 47 | 1233 | 3.71 | 3484 |
+| very_hard | cellv1_6 | 0.8079 ± 0.0087 | 800 ± 216 | 1300 | 5.63 | 3518 (+34) |
+
+- **Test R²:** CellV1.6 is **lower at both levels** — `hard` Δ = −0.0118
+  (≈ −1.2 × cellv0.1's seed std), `very_hard` Δ = −0.0114 (≈ −2.4 ×).
+  Per seed, `cellv0.1` wins 5 of 6 pairs; the exception is
+  `very_hard`/seed 0, a near-tie (`cellv1_6` +0.0007). Small, but
+  consistently negative — not a collapse, not a large regression.
+- **Parameter count:** +34 (+0.96% `hard`, +0.98% `very_hard`). Not
+  meaningful. (Constraint satisfied — the gate does not meaningfully
+  grow the model.)
+- **Convergence-step ratio** (`cellv1_6` / `cellv0.1`, best-val
+  checkpoint): 0.86 (`hard`), 1.09 (`very_hard`). No consistent
+  direction; `cellv1_6`'s best-step seed variance is large (±82, ±216).
+  Total-steps comparable (900 vs 967; 1300 vs 1233).
+- **Runtime ratio** (total wall-clock): 1.10× (`hard`), 1.52×
+  (`very_hard`). `cellv1_6` is slower per run. The `very_hard` 1.52×
+  overstates the mechanism cost — these are 3–6-hidden-cell models where
+  the gate's fixed overhead (measured 0.14–0.24 ms/forward on MPS in the
+  implementation writeup) is a large fraction of a ~3500-param backbone,
+  and single wall-clock measurements over 3 seeds are noisy
+  (`cellv1_6` `very_hard`: 4.53 / 6.68 / 5.69 s).
+
+**Assembly diagnostics** (mean over seeds, measured on the full test set
+at three points; `init` = before any training, `best` = at the best-val
+checkpoint, `end` = at the point training stopped):
+
+| level | phase | active_fraction | mean_participation | delta | population_log_precision |
+|---|---|---|---|---|---|
+| hard | init | 1.0000 | 0.7959 | 4.0299 | −1.3865 |
+| hard | best | 0.5510 | 0.3425 | 1.7237 | −1.5331 |
+| hard | end | 0.5626 | 0.3365 | 1.7272 | −1.5398 |
+| very_hard | init | 1.0000 | 0.8515 | 4.0298 | −1.3864 |
+| very_hard | best | 0.5476 | 0.4235 | 1.5139 | −1.5641 |
+| very_hard | end | 0.5500 | 0.4288 | 1.5700 | −1.5697 |
+
+- **Active fraction does NOT stay ~1.0** and does **NOT** collapse toward
+  zero — it settles at ~0.55 at both levels (with 3–6 cells, ~0.55 means
+  the max-drive cell plus, on average, roughly one more). Reported
+  plainly, per the important-checks instruction; no sparsity penalty
+  added, nothing repaired.
+- **Both `delta` and active fraction move:** `delta` narrows from 4.03
+  to ~1.5–1.7 (~2.5×), active fraction 1.00 → 0.55, mean participation
+  ~0.80 → ~0.34–0.42. So the gate learned a real, non-trivial competition
+  regime — not the "delta changes but participation doesn't" case, and
+  not a no-op.
+- **`best` ≈ `end`** on every diagnostic (active fraction 0.551 vs 0.563;
+  delta 1.72 vs 1.73) — the operating regime is stable through the
+  patience tail, not still drifting when training stops.
+- `population_log_precision` (C) drifts slightly more negative
+  (−1.39 → −1.53 / −1.56) — the belief states' evidence/uncertainty
+  balance shifted modestly under end-to-end training; a small effect.
+
+**Verdict on the frozen hypothesis** ("does letting CellV0.1's internal
+evidence/uncertainty dynamically regulate population participation improve
+computation over CellV0.1 alone, without meaningfully increasing parameter
+count or optimization cost?"): **negative on this benchmark.** The gate
+adds ~1% params, costs modestly more wall-clock, converges in a
+comparable number of steps, and learns a genuine sparse operating regime
+(active fraction 1.0 → 0.55, window 4.0 → 1.6) — but test R² is
+consistently ~0.011–0.012 lower than plain CellV0.1 at both complexity
+levels. Not tuned, not redesigned; the result stands as tested.
+
+**Obvious caveat, not an interpretation:** the matched-parameter budget
+forces a 3–6-cell hidden population, a degenerate regime for a
+"population competition" mechanism (at `very_hard` the gate chooses among
+3 cells, one always pinned on). Whether the mechanism behaves differently
+with a wider hidden population is a separate question this experiment
+does not touch (it would break the parameter match and the frozen
+protocol).
+
+**Why:** The experiment protocol, models compared, and parameter budget
+are all the user's explicit spec; the two harness additions
+(`capture_final_state`, the `_build_assembly_comparison_models` /
+`run_convergence_assembly_comparison` pair) are experiment-local
+composition of existing pieces following the established
+`harness.py` pattern, not new architecture or protocol.
