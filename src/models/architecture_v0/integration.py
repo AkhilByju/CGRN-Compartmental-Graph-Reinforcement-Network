@@ -284,7 +284,21 @@ class BeliefLayer(nn.Module):
         self.bias = nn.Parameter(torch.zeros(out_cells))
         nn.init.kaiming_uniform_(self.content_weight, a=math.sqrt(5))
 
-    def forward(self, incoming: BeliefCell) -> BeliefCell:
+    def forward(
+        self,
+        incoming: BeliefCell,
+        source_participation: torch.Tensor | None = None,
+    ) -> BeliefCell:
+        """`source_participation`, if given, is a per-example, per-source-cell
+        gain of shape `(batch, in_cells)` in `[0, 1]` -- each incoming cell
+        `i`'s learned relevance `g[j, i]` is multiplied by its own
+        `participation[i]` (shared across every receiver `j`) before the
+        aggregation formula runs, unchanged, on the result. This is the one
+        hook CellV1.6's `PrecisionRegulatedAssemblyGate`
+        (`src/models/architecture_v1/assembly_gate.py`) needs; passing
+        `None` (the default) leaves this layer byte-for-byte identical to
+        the CellV0/CellV0.1 layer every prior experiment used.
+        """
         if incoming.mu.shape[-1] != self.in_cells:
             raise ValueError(
                 f"Expected {self.in_cells} incoming cells, got shape {tuple(incoming.mu.shape)}."
@@ -293,6 +307,14 @@ class BeliefLayer(nn.Module):
         # (batch, out_cells, in_cells)
         m = self.content_weight.unsqueeze(0) * incoming.mu.unsqueeze(1)
         g = torch.sigmoid(self.relevance_logit).unsqueeze(0)
+        if source_participation is not None:
+            if source_participation.shape[-1] != self.in_cells:
+                raise ValueError(
+                    f"source_participation must have {self.in_cells} source cells, "
+                    f"got shape {tuple(source_participation.shape)}."
+                )
+            # g_effective[b, j, i] = g[j, i] * participation[b, i]
+            g = g * source_participation.unsqueeze(1)
         e_j = incoming.evidence.unsqueeze(1)
         u_j = incoming.uncertainty.unsqueeze(1)
 
