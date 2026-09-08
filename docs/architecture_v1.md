@@ -66,6 +66,23 @@ tested (45 tests, including a dense/sparse consistency check and a linear
 edge-count scaling check), and pass one short training smoke test. No
 experiment run yet.
 
+**CellV1.6 (§17, PROPOSED AND IMPLEMENTED, unevaluated, 2026-09-06):**
+Deliberately *not* part of the `(mu, e, u, z)` line above — it returns to
+the frozen CellV0.1 `BeliefNetwork` (plain `(mu, e, u)`, scale-stable
+precision fusion) and inserts exactly one input-dependent population-
+competition gate between its two layers: `input -> CellV0.1 layer ->
+PrecisionRegulatedAssemblyGate -> CellV0.1 layer -> readout`. Each cell
+gets a participation gain in `[0, 1]` from a standardized "participation
+drive" `F_part([mu_i, log_precision_i])` competed against the population
+max within a precision-regulated window `delta` (narrower when the
+population is more confident); the following `BeliefLayer` multiplies each
+source cell's learned relevance by its participation and runs the
+unchanged fusion equations. No routing, no recurrence, no plasticity, no
+sparsity loss, no fixed winner count. +34 parameters, constant.
+Implemented (`assembly_gate.py`, `assembly_model.py`, one optional-arg
+hook in `architecture_v0/integration.py`), 26 new tests (suite 360/360),
+one AdamW smoke run. **No experiment run** — not validated.
+
 ## 0. Relationship to Architecture V0
 
 `docs/architecture_v0.md` froze the "what is one cell" question in favor
@@ -864,7 +881,7 @@ fixed `num_steps`, a known gap against the fuller spec, not a bug.
 
 **Status: SPECIFIED AND IMPLEMENTED, no experiment run.** Fully specified
 by the user across a multi-turn design conversation, same day as §14/§15
-(full trace in this section's revision-history entries, §17). Every
+(full trace in this section's revision-history entries, §18). Every
 formula below is the user's; nothing here is an agent invention, per the
 same rule that governed CellV1's own genesis (§0/§14 of `CLAUDE.md`).
 Implemented in `src/models/architecture_v1/structural*.py` (§16.12),
@@ -1180,7 +1197,203 @@ in-degree invariants hold throughout) -- 45 new tests total
 performance-tested** -- no experiment has been run; see §16's status
 line.
 
-## 17. Revision history
+## 17. CellV1.6 — Precision-Regulated Assembly (PROPOSED AND IMPLEMENTED, unevaluated)
+
+**Status: PROPOSED AND IMPLEMENTED, no experiment run.** Specified by the
+user on 2026-09-06 as an *implementation task only* ("Do not redesign the
+architecture, add alternative mechanisms, or perform literature
+research"). Implemented in `src/models/architecture_v1/assembly_gate.py`
+and `assembly_model.py` (§17.7), plus one three-line hook in
+`src/models/architecture_v0/integration.py` (§17.4). Unit-tested (26 new
+tests, full suite 334 → 360) plus a short AdamW smoke-training run --
+"matches the specified formulas, produces valid finite output, adds a
+constant parameter count, builds no `[N, N]` tensor," the same bar every
+other CellV1 variant was held to before its first real run. **Not
+validated** — do not describe it as working until an experiment exists.
+
+> CellV0.1 / scale-stable precision is frozen and remains the
+> neuron/fusion primitive. CellV1.6 adds one input-dependent population
+> competition mechanism between existing CellV0.1 layers.
+
+### 17.1 Scope — one mechanism, nothing else
+
+This is **not** part of the `(mu, e, u, z)` CellV1 line (§3 onward). It
+starts from the CellV0.1 `BeliefNetwork`
+(`src/models/architecture_v0/belief_network.py`) — plain
+`(mu, e, u)` state, `BeliefCell.from_observed_features` encoder, two
+`scale_stable_precision` `BeliefLayer`s, linear readout — and inserts
+exactly one gate:
+
+```text
+input -> CellV0.1 layer -> PrecisionRegulatedAssemblyGate -> CellV0.1 layer -> existing readout
+```
+
+No recurrence, no graph construction, no structural plasticity, no
+local/global fields, no `AssociationFunction` routing, no ORFF, no top-k
+selection, no entmax. No auxiliary sparsity loss of any kind (no target
+support %, no L0/entropy penalty, no fixed winner count, no min/max
+assembly size). If the network learns to activate almost every cell,
+that is a legitimate empirical result and is not artificially prevented.
+
+### 17.2 `PrecisionRegulatedAssemblyGate`
+
+Input: a CellV0.1 `BeliefCell` population, `mu` / `e` / `u` each
+`(batch, n_cells)`. It does not modify the belief state — it produces a
+per-source-cell **participation gain**. Same `eps` convention as
+`BeliefLayer` (default `1e-8`). Per cell:
+
+```text
+log_precision_i = log(e_i + eps) - log(u_i^2 + eps)
+drive_i         = F_part([mu_i, log_precision_i])
+```
+
+`F_part` is one **shared** `2 -> 8 -> 1` MLP with SiLU on the hidden
+layer (`nn.Linear(2, 8)` → `SiLU` → `nn.Linear(8, 1, bias=False)`),
+applied independently to every cell — no per-cell embedding or per-cell
+network anywhere. The output `Linear` carries no bias: the drive is
+immediately per-example standardized, which is exactly invariant to a
+uniform additive constant, so an output bias would be a permanently
+zero-gradient parameter (the BatchNorm-makes-the-prior-bias-redundant
+situation). `F_part` is `2*8 + 8 + 8*1 = 32` params.
+
+Per-example standardization of the drive (over the cell axis):
+
+```text
+drive_mean = mean_cells(drive)
+drive_var  = mean_cells((drive - drive_mean)^2)
+z_i        = (drive_i - drive_mean) / sqrt(drive_var + eps)
+```
+
+Population confidence and the competition-window width:
+
+```text
+C     = mean_cells(log_precision_i)
+kappa = softplus(kappa_raw)                               (learned scalar)
+delta = delta_floor + softplus(width_bias - kappa * C)    (learned scalar width_bias; delta_floor = 0.05)
+```
+
+`delta_floor = 0.05` is a numerical floor, not a tuned assembly-size
+target. Because `kappa >= 0` and `softplus` is monotone, `delta` is
+**non-increasing in `C`** — a more-confident population competes over a
+narrower window. Then:
+
+```text
+z_max            = max_cells(z)
+participation_i  = relu(1 - (z_max - z_i) / (delta + eps))
+```
+
+`z_i <= z_max` so `participation ∈ [0, 1]` structurally: the maximum-drive
+cell has `participation` exactly 1; cells more than `delta` (in
+standardized-drive units) below the max have exact zero. Participation is
+**not** renormalized to sum to one — these are neural gains, not a
+probability distribution. Nothing (`mu`, `e`, `u`, `log_precision`, `C`,
+`participation`) is detached; task-loss gradients shape the belief states
+and the assembly mechanism end to end.
+
+### 17.3 Implementation-choice defaults (not specified by the user)
+
+Flagged the same way §6 / §16.10 flag CellV1's own glue-code gaps:
+
+- **`F_part` output has `bias=False`** — see §17.2 (a dead parameter
+  otherwise).
+- **`kappa_raw_init = 0.0`** (so `kappa = softplus(0) = ln 2 ≈ 0.69`) and
+  **`width_bias_init = 3.0`** (so the initial `delta` is wide, ~2.5–3 in
+  standardized-drive units — most cells participate at init and the
+  network *learns* to sparsify rather than starting sparse, mirroring
+  `WriteGateFunction`'s near-off bias-init convention, §12). Neither is a
+  tuned assembly-size target.
+- **Diagnostics** (§17.5) are returned as detached 0-dim tensors — no
+  host sync in the forward path; the caller `.item()`s them when logging.
+- **Model class** `PrecisionRegulatedAssemblyNetwork`, `.layer1` /
+  `.layer2` / `.readout` named to match `BeliefNetwork` so a CellV0.1
+  `state_dict` for those submodules loads straight in.
+
+### 17.4 Integration with CellV0.1 — the one hook
+
+`integration.BeliefLayer.forward` gains an optional
+`source_participation: Tensor | None = None` argument, `(batch,
+in_cells)`. When `None` (every existing call site), the layer is
+**byte-for-byte identical** to before. When given:
+
+```text
+g_effective[b, j, i] = g[j, i] * participation[b, i]
+```
+
+i.e. each source cell `i`'s existing learned relevance gate is scaled by
+its own participation, shared across every receiver `j`. Then the
+unchanged `scale_stable_precision` equations run on `g_effective` —
+`N_eff` normalization, evidence propagation, precision, disagreement,
+uncertainty, content transform, bias, activation all as-is. No new
+aggregation rule. With `use_assembly_gate=False`, or participation forced
+to all-ones, the model reproduces the CellV0.1 `BeliefNetwork`
+computation exactly (`torch.equal` / `atol=1e-6`; §17.6 tests).
+
+### 17.5 Diagnostics
+
+Returned alongside `participation`, gradient-free:
+
+```text
+assembly_active_fraction        = mean(participation > 0)
+assembly_mean_participation      = mean(participation)
+assembly_delta                   = mean(delta)
+assembly_population_log_precision = mean(C)
+```
+
+`PrecisionRegulatedAssemblyNetwork.last_assembly_diagnostics` holds the
+most recent forward's dict for a training loop to log.
+
+### 17.6 Parameter count and measured overhead
+
+Added parameters over the matched CellV0.1 `BeliefNetwork`: **exactly 34,
+constant** (`F_part` 32 + `kappa_raw` + `width_bias`), independent of
+`in_features` / `hidden_cells` / `out_features` / `n_cells`. Measured:
+9409 → 9443, 37507 → 37541, 38273 → 38307 for three sizes.
+
+Incremental forward-time of the gate itself (isolated
+`PrecisionRegulatedAssemblyGate.__call__`, no backward), measured on this
+repo's dev hardware (M4-class):
+
+| batch × n_cells | CPU | MPS |
+|---|---|---|
+| 64 × 64 | 0.23 ms | 0.14 ms |
+| 128 × 128 | 0.37 ms | 0.15 ms |
+| 256 × 256 | 1.32 ms | 0.24 ms |
+
+End-to-end (`gate-on` vs `use_assembly_gate=False`) on the tiny 2-layer
+net: `+0.3–1.7 ms` depending on size/device — larger than the gate alone
+because `use_assembly_gate=False`'s `layer2` keeps the cheaper broadcast
+`g` of shape `(1, out, in)` whereas the gated path makes it batched
+`(batch, out, in)`; that is mechanism cost, not avoidable overhead.
+Activation memory is linear in `n_cells` — the gate builds nothing larger
+than `F_part`'s `(batch, n_cells, 8)` hidden activation, never an
+`(n_cells, n_cells)` tensor (verified with a `TorchDispatchMode`
+max-numel check and an 8×-cells timing check).
+
+### 17.7 Implementation map
+
+`src/models/architecture_v1/`:
+
+| Module | Contents |
+|---|---|
+| `assembly_gate.py` | `PrecisionRegulatedAssemblyGate` — §17.2's participation computation; `delta_from_confidence` and `_standardize` exposed for unit tests |
+| `assembly_model.py` | `PrecisionRegulatedAssemblyNetwork` — `BeliefNetwork` + the gate between its two layers; `use_assembly_gate` flag; `last_assembly_diagnostics` |
+
+`src/models/architecture_v0/integration.py`: `BeliefLayer.forward` gained
+the optional `source_participation` argument (§17.4) — the only edit to
+existing code; `None` default keeps every prior experiment unchanged.
+
+Tests: `tests/test_assembly_gate.py` (18), `tests/test_assembly_model.py`
+(8) — 26 new, full suite 360/360. Coverage: shape/dtype/device (incl.
+MPS), participation finite and in `[0, 1]`, max-drive cell = 1, exact
+zero outside the window, no fixed winner count, `delta` non-increasing
+when evidence rises / uncertainty falls uniformly, standardized `z`
+invariant to positive affine changes of the drive logits, gradients reach
+`mu` / `e` / `u` / `F_part` / `kappa_raw` / `width_bias`, gate-disabled
+and participation-ones both reproduce CellV0.1 exactly, no `[N, N]`
+tensor + linear memory scaling, and a 30-step AdamW smoke run (loss
+down, no NaNs). **Correctness only — no experiment has been run.**
+
+## 18. Revision history
 
 - 2026-09-01: Proposal captured from a design conversation with the user —
   self-organizing, input-dependent belief graph; no fixed
