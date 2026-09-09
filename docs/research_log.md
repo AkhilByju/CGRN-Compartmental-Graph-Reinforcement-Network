@@ -2038,3 +2038,105 @@ are all the user's explicit spec; the two harness additions
 `run_convergence_assembly_comparison` pair) are experiment-local
 composition of existing pieces following the established
 `harness.py` pattern, not new architecture or protocol.
+
+## 2026-09-08 — Paper A Phase 1: CellV0.1 standalone public-benchmark screen
+
+**Context:** CellV1 work frozen. Question: does CellV0.1 — the plain
+`(mu, e, u)` belief cell with `scale_stable_precision` fusion
+(`src/models/architecture_v0/`, `BeliefNetwork`, unchanged) — deserve a
+paper as a standalone artificial-neuron primitive? Phase 1 is
+implementation + a screening run on public data, nothing tuned, CellV0.1
+untouched. New code is all under `experiments/paper_a/` (composition only).
+
+**Setup (frozen before looking at any number):** 7 datasets (sklearn
+Breast Cancer / Wine / Digits / Diabetes / California Housing; openml
+MNIST / Fashion-MNIST, flattened, no CNN) × {25%, 100%} training pool ×
+seeds 0/1/2 × 3 models: (A) CellV0.1, largest hidden-cell count within a
+fixed per-class parameter budget (~10k / ~25k / ~150k); (B) a
+parameter-matched 1-hidden-layer SiLU MLP (≤0.12% off A's count on every
+dataset); (C) a state-count MLP, hidden width 3×A's hidden cells, **not**
+parameter-matched. Shared protocol: AdamW, lr=1e-2, wd=0, best-val
+restore, ~1500-step early-stop patience, 15000-step cap, CPU. 126 main +
+9 fixed-confidence ablation runs + 1 deterministic duplication experiment.
+Full tables: `experiments/paper_a/phase1_results.md`.
+
+**A. Where CellV0.1 lands vs the parameter-matched MLP (headline, mean of
+3 seeds, +ve = CellV0.1 better):**
+
+| dataset | 25% | 100% |
+|---|---|---|
+| MNIST (acc) | +0.007 | +0.015 |
+| Fashion-MNIST (acc) | +0.010 | +0.014 |
+| California Housing (R²) | +0.017 | +0.080 |
+| Diabetes (R²) | +0.359 | +0.081 |
+| Breast Cancer (acc) | −0.009 | +0.003 |
+| Wine (acc) | −0.019 | −0.009 |
+| Digits (acc) | −0.053 | −0.040 |
+
+Ahead by >0.01 in 7 of 14 (dataset, fraction) cells, behind by >0.01 in 3
+(all of Digits + Wine-25%), within ±0.01 in 4.
+
+- **Images:** small but fully consistent edge — every one of the 12
+  image seed-comparisons is positive.
+- **Regression:** the large Diabetes/California margins are **partly a
+  baseline artifact**: under the shared lr=1e-2 the matched MLP is
+  unstable on these small regression sets (Diabetes-25% MLP
+  R²=0.017±0.302 — one seed to negative R²; California-100% MLP
+  R²=0.697±0.079, *worse* than its 0.732 at 25%). No NaN/divergence, so
+  the protocol was not changed (per the task's instruction); reported as
+  a caveat, not a clean win.
+- **Digits:** CellV0.1 clearly loses, at both fractions, and the wider
+  state-count MLP beats it too — a genuine handicap on this task.
+- The advantage is **not** reliably larger at 25% data (mixed; on
+  Diabetes CellV0.1 is flat 0.376→0.381 while the MLP catches up).
+
+**B. State-count control:** the substantially wider (not
+parameter-matched) MLP does **not** close CellV0.1's edge on
+MNIST/Fashion-MNIST/California/Diabetes — on the image sets it is in fact
+*worse* than the parameter-matched MLP (overfits / optimizes worse at
+lr=1e-2). "Give an ordinary MLP as many hidden activations as CellV0.1 has
+state values" does not reproduce the image-dataset edge.
+
+**C. Fixed-confidence ablation (Sec 11) — the paper's actual hypothesis:**
+force every belief entering a fusion to `e=u=1`, same content weights,
+same parameter count. Digits −0.001, Diabetes −0.001, Fashion-MNIST
++0.007. So the **dynamically propagated evidence/uncertainty state is
+inert** on the tabular datasets where CellV0.1 does well — its behaviour
+there comes from the richer per-connection content parameterisation (a
+content weight *and* a relevance gate, two params/connection), not the
+belief state. Only on Fashion-MNIST does the propagated `e`/`u`
+contribute measurably (~0.7 pt).
+
+**D. Duplication-invariance (Sec 10, deterministic):** a fixed
+heterogeneous 6-source belief set, whole multiset duplicated ×1/2/4/8/16.
+`scale_stable_precision` (and `normalized_precision`): output (mu, e, u)
+invariant to float64 tolerance (max |Δ| ≈ 3e-9). The pre-scale-stable
+`precision` rule (kept unmodified as the historical control): evidence
+grows exactly ×m (5.26 → 84.16 at ×16), uncertainty shrinks. The central
+scale-stability property holds exactly.
+
+**E. Cost & stability:** CellV0.1 trains ~100–250× slower in wall-clock
+than the matched MLP under the same step regime (MNIST/Fashion-MNIST
+CellV0.1 runs converge and early-stop at ~4k–12k steps — not
+cap-censored). Internal `e`/`u` finite and positive everywhere, but
+Digits layer-1 max uncertainty spikes to ~2×10⁴ and California to ~5×10²
+— a numerical-range flag, not a failure. Diabetes-100% CellV0.1 has ~3×
+the matched MLP's seed variance.
+
+**Verdict on whether CellV0.1 deserves a paper — neutral, leaning weak.**
+The advantage does not disappear on all public data (consistent ~1% edge
+on both flattened-image sets, every seed) and is not reproduced by
+widening the MLP — so this is not the "bad" outcome. But it is not
+"strong" either: the edge is small where it is clean, reversed on Digits,
+confounded by baseline instability on the regression sets, and not
+reliably data-efficiency-driven. Most importantly, the fixed-confidence
+ablation shows the mechanism the paper is *about* — recursively
+propagating evidence/uncertainty — contributes only on Fashion-MNIST;
+elsewhere CellV0.1's numbers are carried by its content-pathway
+parameterisation. Reported as evidence, no redesign (Sec 12/14).
+
+**Why:** dataset list, model families, budgets, regimes, protocol are the
+Paper-A task spec verbatim; `experiments/paper_a/` is experiment-local
+composition of existing `src/` infrastructure following the
+`experiments/*/harness.py` pattern — no new architecture, math, or
+training procedure, and CellV0.1's equations are unchanged.

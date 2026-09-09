@@ -234,6 +234,8 @@ def table_d_state_count(rows: list[dict], datasets: list[str]) -> list[str]:
         "CellV0.1 − matched | CellV0.1 − state-count |"
     )
     out.append("|---|---|---|---|---|---|---|")
+    erased = []
+    kept = []
     for ds in datasets:
         for frac in FRACTIONS:
             cr = cells.get((ds, frac, "cellv0.1"))
@@ -250,6 +252,26 @@ def table_d_state_count(rows: list[dict], datasets: list[str]) -> list[str]:
                 f"| {ds} | {int(frac*100)}% | {cp:,} | {sp:,} | {sp / cp:.2f}× | "
                 f"{cm - mmm:+.4f} | {cm - scm:+.4f} |"
             )
+            # "erased" = CellV0.1 was ahead of the matched MLP but not the wider one
+            if (cm - mmm) > _CLEAR_LOSS_MARGIN and (cm - scm) <= _CLEAR_LOSS_MARGIN:
+                erased.append(f"{ds} {int(frac*100)}%")
+            elif (cm - mmm) > _CLEAR_LOSS_MARGIN and (cm - scm) > _CLEAR_LOSS_MARGIN:
+                kept.append(f"{ds} {int(frac*100)}%")
+    out.append("")
+    out.append(
+        "**Verdict:** on the cells where CellV0.1 was >0.01 ahead of the "
+        "parameter-matched MLP, the wider state-count MLP "
+        + (
+            f"**does not** close that gap ({', '.join(kept)}); "
+            if kept
+            else ""
+        )
+        + (
+            f"it closes/reverses it on: {', '.join(erased)}."
+            if erased
+            else "there are no cells where the wider MLP closes a real CellV0.1 edge."
+        )
+    )
     out.append("")
     out.append(
         "_Note: for the low-feature tabular datasets the state-count MLP is "
@@ -439,6 +461,68 @@ def section_diagnostics(rows: list[dict], datasets: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def section_signal(rows: list[dict], datasets: list[str]) -> list[str]:
+    """Per-dataset headline signal: CellV0.1 - parameter-matched MLP, and
+    whether the wider state-count MLP erases it. No significance testing;
+    a +/-0.01 headline margin is the reporting threshold only."""
+    cells = _by_cell(rows)
+    out = ["## Headline signal (per dataset)", ""]
+    out.append(
+        "| Dataset | Δ vs matched (25% / 100%) | Δ vs state-count (25% / 100%) | Read |"
+    )
+    out.append("|---|---|---|---|")
+    tallies = {"win": 0, "loss": 0, "tie": 0}
+    for ds in datasets:
+        d_m, d_s, reads = [], [], []
+        for frac in FRACTIONS:
+            cr = cells.get((ds, frac, "cellv0.1"))
+            mm = cells.get((ds, frac, "mlp_matched"))
+            sc = cells.get((ds, frac, "mlp_state_count"))
+            if not (cr and mm and sc):
+                d_m.append(float("nan"))
+                d_s.append(float("nan"))
+                continue
+            cm = _agg([_headline(r) for r in cr])[0]
+            dm = cm - _agg([_headline(r) for r in mm])[0]
+            dsn = cm - _agg([_headline(r) for r in sc])[0]
+            d_m.append(dm)
+            d_s.append(dsn)
+            if dm > _CLEAR_LOSS_MARGIN:
+                reads.append("win")
+            elif dm < -_CLEAR_LOSS_MARGIN:
+                reads.append("loss")
+            else:
+                reads.append("tie")
+        read = "tie"
+        if reads:
+            if reads.count("win") == len(reads):
+                read = "win (both fractions)"
+            elif reads.count("loss") == len(reads):
+                read = "loss (both fractions)"
+            elif "win" in reads and "loss" not in reads:
+                read = "win (one fraction)"
+            elif "loss" in reads and "win" not in reads:
+                read = "loss (one fraction)"
+            else:
+                read = "mixed"
+            for r in reads:
+                tallies[r] += 1
+        out.append(
+            f"| {ds} | {d_m[0]:+.4f} / {d_m[1]:+.4f} | "
+            f"{d_s[0]:+.4f} / {d_s[1]:+.4f} | {read} |"
+        )
+    out.append("")
+    out.append(
+        f"Across all {sum(tallies.values())} (dataset, fraction) cells: "
+        f"CellV0.1 ahead by >0.01 in {tallies['win']}, behind by >0.01 in "
+        f"{tallies['loss']}, within ±0.01 in {tallies['tie']}. The state-count "
+        "column shows whether a wider (not parameter-matched) MLP erases the "
+        "gap — compare its sign to the matched column."
+    )
+    out.append("")
+    return out
+
+
 def build_report(raw_dir: Path, dup_path: Path) -> str:
     rows = _load_records(raw_dir, EXPERIMENT_ID)
     ablation_rows = _load_records(raw_dir, ABLATION_EXPERIMENT_ID)
@@ -467,6 +551,7 @@ def build_report(raw_dir: Path, dup_path: Path) -> str:
     lines.append("")
 
     if rows:
+        lines += section_signal(rows, present)
         lines += table_a_main(rows, present)
         lines += table_b_paired(rows, present)
         lines += table_c_efficiency(rows, present)
