@@ -16,6 +16,15 @@ feedforward stack used ONLY by Experiment 002/003 to test CellV0 in
 isolation -- it is NOT `ArchitectureV0` and does not imply `model.py` is
 unblocked.
 
+`precision_gain.py` implements **CellV0.2** -- the Conservative Precision-Gain
+Cell (`PrecisionGainLayer`, `BeliefNetworkV02`). A SEPARATE CellV0-line
+aggregation operator, specified in full by the user and distinct from the
+`BeliefLayer` methods: it drops the relevance-gate matrix entirely, carries
+one signed connection matrix `V` plus a per-output gain/bias, and its
+readout consumes confidence. Same `BeliefCell` state; input belief
+`e = 1, u = 0`. See docs/architecture_v0.md Sec 10 and
+docs/research_log.md. This does not unblock `model.py` or any other stub.
+
 Every other module in this package (`cluster.py`, `graph.py`,
 `dynamics.py`, `encoder.py`, `decoder.py`, `model.py`) still raises
 `NotImplementedError` and remains unspecified. See docs/architecture_v0.md

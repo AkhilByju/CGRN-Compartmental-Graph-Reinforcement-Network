@@ -30,6 +30,18 @@ continues to stand on its own (Experiments 002-004) — but §3/§4's open
 sketches are no longer the live design questions for graph structure;
 `docs/architecture_v1.md` is.
 
+**§10 (below) is a second, separate CellV0-line cell — CellV0.2, the
+Conservative Precision-Gain Cell.** User-specified in full mathematical
+detail (2026-09-09) and implemented in
+`src/models/architecture_v0/precision_gain.py` (`PrecisionGainLayer`,
+`BeliefNetworkV02`). It is **not** a sixth `BeliefLayer` aggregation method:
+it removes the relevance-gate matrix entirely. It reuses the `BeliefCell`
+state but with input belief `e = 1, u = 0`. Like CellV1, this is the user's
+own specification, not an agent-invented aggregation rule — the "do not add
+a further candidate" rule for §1's `BeliefLayer` is unchanged and still
+applies to `BeliefLayer`. CellV0.2 has been evaluated on the frozen Paper-A
+Phase-1 protocol (`docs/research_log.md`, 2026-09-09).
+
 ## 1. CellV0 — the basic computational unit
 
 **State: SPECIFIED. Aggregation: FIVE CANDIDATES IMPLEMENTED, none chosen.**
@@ -351,7 +363,103 @@ rejected idea — it is deferred to preserve experimental interpretability
   strongly justifies it)
 - Novel optimizers or novel training objectives
 
-## 9. Revision history
+## 9. CellV0.2 — Conservative Precision-Gain Cell (separate line, IMPLEMENTED)
+
+**Status: SPECIFIED (user, 2026-09-09) and IMPLEMENTED**
+(`src/models/architecture_v0/precision_gain.py`). Evaluated on the frozen
+Paper-A Phase-1 protocol — see `docs/research_log.md` (2026-09-09) and
+`experiments/paper_a/phase1_v02_results.md`.
+
+CellV0.2 is a second CellV0-line aggregation operator, specified in full by
+the user across one conversation turn. It is **not** a sixth `BeliefLayer`
+method (§1) — it removes the separate relevance-gate matrix (`a_ij` / `g_ij`)
+entirely — so it lives in its own module (`PrecisionGainLayer`,
+`BeliefNetworkV02`), not behind `BeliefLayer(aggregation=...)`. It reuses the
+`BeliefCell` state `(mu, e, u)` but initializes the *input* belief
+`e = 1, u = 0` (not `e = u = 1`).
+
+### 9.1 Per-layer computation
+
+Source population `(mu_j, e_j, u_j)`, output cell `i`. `eps` is used only as a
+denominator floor to prevent division by zero (`e, u >= 0` already makes
+`1 + e u >= 1`, so effective precision needs none).
+
+```text
+effective precision    pi_j     = e_j / (1 + e_j u_j)
+population mean         pi_bar   = mean_j pi_j                    (NOT detached)
+relative gain          r_j      = 2 pi_j / (pi_j + pi_bar)        in (0, 2); = 1 iff all pi equal
+gain-modulated message x_j      = r_j * mu_j
+
+abs_V   = |V|                              V has shape [out_cells, in_cells]
+row_l1_i = sum_j |V_ij|
+gamma_i  = softplus(gain_raw_i)            > 0
+
+signed consensus       c_i      = (sum_j x_j V_ij) / row_l1_i           # GEMM 1
+content                mu_i     = tanh(gamma_i c_i + b_i)
+inherited support      e_i      = (sum_j pi_j |V_ij|) / row_l1_i        # GEMM 2   (convex comb -> <= max_j pi_j)
+second moment          s_i      = (sum_j x_j^2 |V_ij|) / row_l1_i       # GEMM 3
+disagreement           u_i      = max(0, s_i - c_i^2)                   # |V|-weighted variance of sign(V_ij) x_j
+
+next-layer precision   pi_i     = e_i / (1 + e_i u_i)                   # <= e_i
+```
+
+Three trainable parameter objects per layer, and no gate matrix:
+
+| Parameter | Shape | Role |
+|---|---|---|
+| `V` | `[out_cells, in_cells]` | signed connection directions |
+| `gain_raw` | `[out_cells]` | pre-softplus output amplitude `gamma` |
+| `bias` | `[out_cells]` | |
+
+Per-layer parameter count: **`out_cells * (in_cells + 2)`** — vs CellV0.1's
+`out_cells * (2 * in_cells + 1)`.
+
+### 9.2 Initialization
+
+`V` uses the project's standard linear-layer init (Kaiming-uniform,
+`a = sqrt(5)`). `gain_raw` is set by **inverse-softplus so that
+`gamma_i = ||V_i||_1` at init**. Two consequences the tests pin
+(`tests/test_precision_gain.py`):
+
+1. **Neutral-confidence reduction.** On an input with `e = 1, u = 0`
+   (`pi = 1`, `r = 1`, `x = mu`), the layer's content path reduces
+   *exactly* to `tanh(F.linear(mu, V, b))`.
+2. **Linear-row expressivity.** Setting `gamma_i = ||V_i||_1` makes the
+   normalized `(V, gamma)` pair represent any conventional linear weight
+   row.
+
+### 9.3 Properties (all in `tests/test_precision_gain.py`)
+
+- `e_i` is a convex combination of source precisions → `e_i <= max_j pi_j`
+  and `pi_i <= e_i` ("conservative").
+- Uniform replication invariance: duplicating the source population and the
+  matching columns of `V` (×2, ×4, ×8, ×16) leaves `(mu_i, e_i, u_i)`
+  unchanged.
+- Row-scaling invariance: multiplying a whole row of `V` by a positive
+  constant (with `gamma` fixed) changes neither the normalized consensus,
+  `e_i`, nor `u_i`.
+- Conflicting gain-modulated messages raise `u_i` and therefore lower the
+  effective output precision, at fixed inherited support.
+- Every layer forward is three GEMMs — **no `(batch, out_cells, in_cells)`
+  edge tensor is materialized** (unlike `BeliefLayer`'s broadcast).
+
+### 9.4 `BeliefNetworkV02`
+
+`input → PrecisionGainLayer → PrecisionGainLayer → confidence-scaled linear
+readout`. Mirrors CellV0.1's `BeliefNetwork` except the readout **consumes
+confidence**: it is applied to `relative_gain(final_precision) * final_mu`,
+not `final_mu`. The readout does not emit a belief state. Hidden width is
+fitted to the same Phase-1 parameter budget as CellV0.1; because CellV0.2
+spends one parameter per connection instead of two, that budget buys
+~1.5× the hidden cells (reported, not equalized).
+
+### 9.5 What is NOT changed
+
+No learned gates, no auxiliary losses, no learned temperature/coefficient/
+exponent, no CellV1 mechanisms, no tuning of the formulas. CellV0.1's
+equations, parameters, and recorded Phase-1 results are untouched.
+
+## 10. Revision history
 
 - Repository initialization: document created as a design-space placeholder;
   no architectural decisions made yet.
@@ -384,3 +492,15 @@ rejected idea — it is deferred to preserve experimental interpretability
   still can under `"normalized_precision"`. Kept alongside both
   `"precision"` and `"normalized_precision"` — see §1 and
   `docs/research_log.md` ("Experiment 004I").
+- CellV0.2 — Conservative Precision-Gain Cell (2026-09-09): a **separate**
+  CellV0-line cell (new §9), user-specified in full and implemented in
+  `src/models/architecture_v0/precision_gain.py`. Drops the relevance-gate
+  matrix; carries one signed `V` plus per-output `gain_raw`/`bias`;
+  effective precision `e/(1+e u)` drives a relative-gain modulation of each
+  source message; `e` propagates as a `|V|`-weighted convex combination
+  (conservative) and `u` as the `|V|`-weighted variance of the signed
+  messages. `gain_raw` inverse-softplus-initialized so the layer reduces to
+  `tanh(F.linear(mu, V, b))` at neutral confidence. Not a `BeliefLayer`
+  method — it has its own `PrecisionGainLayer` / `BeliefNetworkV02`.
+  Evaluated on the frozen Paper-A Phase-1 protocol (`docs/research_log.md`,
+  2026-09-09). CellV0.1 and the `BeliefLayer` methods are unchanged.
