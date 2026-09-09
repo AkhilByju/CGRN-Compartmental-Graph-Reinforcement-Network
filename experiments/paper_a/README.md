@@ -95,3 +95,22 @@ re-run; their recorded `paper_a_phase1` records are reused for comparison.
 
 CellV0.2 is deliberately **not** in `models.MODEL_FAMILIES`, so
 `run_phase1.py` never sweeps it into the original screen.
+
+## CellV0.3 follow-up (separate, later, user-commissioned)
+
+`docs/architecture_v0.md` §10 — **CellV0.3**, the Conflict-Normalized Belief
+Cell — was specified in full by the user on 2026-09-09 as its own
+architecture line and run through this **identical frozen protocol**. Same
+one-signed-matrix parameterization as CellV0.2, but CellV0.2's
+population-relative precision gain is removed and each cell folds
+`sqrt(precision)` into its own activation. CellV0.1, CellV0.2 and the matched
+MLP are not re-run; their recorded records are reused for comparison.
+
+| File | Role |
+|---|---|
+| `run_phase1_v03.py` | The 42 CellV0.3 runs (experiment id `paper_a_phase1_cellv03`). |
+| `summarize_v03.py` | CellV0.3 tables + paired diffs vs the recorded MLP / CellV0.1 / CellV0.2, plus the init-vs-best-checkpoint precision-mechanism report → `phase1_v03_results.md`. |
+| `bench_cellv03_layer.py` | Isolated layer forward/backward timing vs CellV0.1, CellV0.2, and `Linear+Tanh`. |
+
+CellV0.3 is deliberately **not** in `models.MODEL_FAMILIES`, so
+`run_phase1.py` never sweeps it into the original screen.

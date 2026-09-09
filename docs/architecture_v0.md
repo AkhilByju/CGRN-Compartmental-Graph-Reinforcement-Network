@@ -30,7 +30,7 @@ continues to stand on its own (Experiments 002-004) — but §3/§4's open
 sketches are no longer the live design questions for graph structure;
 `docs/architecture_v1.md` is.
 
-**§10 (below) is a second, separate CellV0-line cell — CellV0.2, the
+**§9 (below) is a second, separate CellV0-line cell — CellV0.2, the
 Conservative Precision-Gain Cell.** User-specified in full mathematical
 detail (2026-09-09) and implemented in
 `src/models/architecture_v0/precision_gain.py` (`PrecisionGainLayer`,
@@ -41,6 +41,18 @@ own specification, not an agent-invented aggregation rule — the "do not add
 a further candidate" rule for §1's `BeliefLayer` is unchanged and still
 applies to `BeliefLayer`. CellV0.2 has been evaluated on the frozen Paper-A
 Phase-1 protocol (`docs/research_log.md`, 2026-09-09).
+
+**§10 (below) is a third, separate CellV0-line cell — CellV0.3, the
+Conflict-Normalized Belief Cell.** User-specified in full mathematical
+detail (2026-09-09) and implemented in
+`src/models/architecture_v0/conflict_normalized.py`
+(`ConflictNormalizedLayer`, `BeliefNetworkV03`). Same one-signed-matrix
+parameterization as CellV0.2, but CellV0.2's population-relative precision
+gain `2 pi / (pi + mean pi)` is removed entirely and each cell's
+`sqrt(precision)` is folded into its *own* activation. Also the user's own
+specification, delivered with an explicit implement-and-evaluate
+instruction; CellV0.1's and CellV0.2's equations and recorded results are
+untouched.
 
 ## 1. CellV0 — the basic computational unit
 
@@ -459,7 +471,118 @@ No learned gates, no auxiliary losses, no learned temperature/coefficient/
 exponent, no CellV1 mechanisms, no tuning of the formulas. CellV0.1's
 equations, parameters, and recorded Phase-1 results are untouched.
 
-## 10. Revision history
+## 10. CellV0.3 — Conflict-Normalized Belief Cell (separate line, IMPLEMENTED)
+
+**Status: SPECIFIED (user, 2026-09-09) and IMPLEMENTED**
+(`src/models/architecture_v0/conflict_normalized.py`). Documented here as
+*implemented, unevaluated*; the frozen Paper-A Phase-1 result is recorded in
+`docs/research_log.md` and `experiments/paper_a/phase1_v03_results.md` after
+the 42-run sweep.
+
+CellV0.3 is a **third** CellV0-line aggregation operator, specified in full
+by the user. It keeps CellV0.2's parameterization exactly — one signed `V`
+`[out, in]` plus per-output `gain_raw` / `bias`, no relevance-gate matrix —
+so it lives in its own module (`ConflictNormalizedLayer`,
+`BeliefNetworkV03`), not behind `BeliefLayer(aggregation=...)`. It reuses the
+`BeliefCell` state `(mu, e, u)` with input belief `e = 1, u = 0`, but reads
+`e` as *inherited support* and `u` as an *internal conflict/disagreement*
+state — **not** calibrated predictive uncertainty.
+
+### 10.1 Motivation
+
+CellV0.2's relative precision gain `2 pi / (pi + mean_k pi_k)` removes
+*absolute* confidence: if every source's precision is scaled down by the
+same factor, the gain stays exactly `1` and nothing downstream can tell the
+population became less reliable. CellV0.3 removes that population-relative
+normalization. Each cell forms a precision-weighted consensus, measures the
+conflict among its sources, derives its own usable precision, and uses that
+precision *inside its own activation in the same forward step* — so
+evidence/conflict is causally relevant, not passive metadata.
+
+### 10.2 Per-layer computation
+
+Source population `(mu_j, e_j, u_j)`, output cell `i`. `eps` is a
+denominator/clamp floor for numerical safety only.
+
+```text
+usable precision       pi_j    = e_j / (1 + e_j u_j)                     (no population mean; no relative gain)
+
+abs_V   = |V|                                    V has shape [out_cells, in_cells]
+row_l1_i = max(sum_j |V_ij|, eps)
+A_ij    = |V_ij| / row_l1_i                      unsigned structural weights, sum_j A_ij ~ 1
+S_ij    = V_ij  / row_l1_i                       signed content weights
+
+inherited support      e_i     = sum_j A_ij pi_j                  # GEMM  (convex comb -> <= max_j pi_j)
+signed consensus       c_i     = (sum_j S_ij pi_j mu_j) / e_i     # GEMM, safe denominator
+second moment          s_i     = (sum_j A_ij pi_j mu_j^2) / e_i   # GEMM, safe denominator
+conflict               u_i     = max(0, s_i - c_i^2)              # A-weighted variance of sign(V_ij) mu_j
+output precision       pi_i    = e_i / (1 + e_i u_i)              # <= e_i <= max_j pi_j
+confidence scale       k_i     = sqrt(pi_i)
+content                mu_i    = tanh(gamma_i c_i k_i + b_i),  gamma_i = softplus(gain_raw_i)
+```
+
+Three trainable parameter objects per layer, and no gate matrix:
+
+| Parameter | Shape | Role |
+|---|---|---|
+| `V` | `[out_cells, in_cells]` | signed connection directions |
+| `gain_raw` | `[out_cells]` | pre-softplus output amplitude `gamma` |
+| `bias` | `[out_cells]` | |
+
+Per-layer parameter count: **`out_cells * (in_cells + 2)`** — identical to
+CellV0.2's.
+
+The dense forward is three GEMMs — `(pi*mu) @ S.T`, `pi @ A.T`,
+`(pi*mu^2) @ A.T` — and **no `(batch, out_cells, in_cells)` edge tensor** is
+materialized. Gradients from the task loss flow through
+`mu_out -> pi_out -> e_out/u_out -> input e/u` as well as through the content
+path; `pi_out` is not detached and not normalized against the rest of the
+population.
+
+### 10.3 Initialization
+
+`V` uses the project's standard linear-layer init (Kaiming-uniform,
+`a = sqrt(5)`). `gain_raw` is set by inverse-softplus so `gamma_i = ||V_i||_1`
+at init — the same amplitude convention as CellV0.2. **Unlike CellV0.2**, a
+neutral-confidence input does *not* generically reduce the layer to
+`tanh(F.linear(mu, V, b))`: `sqrt(pi_i) = 1` requires `pi_i = 1`, i.e.
+`e_i = 1` *and* `u_i = 0` (zero conflict). The zero-conflict, unit-precision
+case does reduce exactly (`tests/test_conflict_normalized.py`).
+
+### 10.4 Properties (all in `tests/test_conflict_normalized.py`)
+
+- `e_i` is a convex combination of source precisions → `e_i <= max_j pi_j`
+  and `pi_i <= e_i` ("conservative"); a layer cannot manufacture confidence
+  beyond its strongest source.
+- Perfectly-agreeing signed messages → `u_i ≈ 0` → `pi_i ≈ e_i`.
+- With consensus held fixed, more disagreement raises `u_i`, lowers `pi_i`,
+  and shrinks the confidence-scaled activation.
+- **Absolute-confidence sensitivity** (the property CellV0.2 lost):
+  uniformly lowering every source's precision — same `mu`, same relative
+  precision pattern, same weight structure — produces a strictly lower
+  `sqrt(pi_out)` and a different activation. `pi = [1,1,1]` and
+  `pi = [0.1,0.1,0.1]` do not give the same output.
+- Uniform replication invariance ×2/×4/×8/×16 (float64), positive
+  V-row-scaling invariance of the normalized quantities.
+
+### 10.5 `BeliefNetworkV03`
+
+`input → ConflictNormalizedLayer → ConflictNormalizedLayer → linear readout`.
+The readout consumes `final_mu` **directly** — it is *not* re-scaled by
+precision (contrast CellV0.2), because each CellV0.3 cell has already folded
+its own output precision into its activation. Hidden width is fitted to the
+same Phase-1 parameter budget as CellV0.1/CellV0.2; the resulting (larger)
+hidden-cell count matches CellV0.2's and is reported, not equalized.
+
+### 10.6 What is NOT changed
+
+No learned gates, no auxiliary/calibration losses, no learned
+temperature/exponent, no precision floor beyond numerical safety, no
+residual paths, no CellV1 mechanisms, no per-dataset tuning. The `sqrt`
+exponent is fixed. CellV0.1's and CellV0.2's equations, parameters, and
+recorded results are untouched.
+
+## 11. Revision history
 
 - Repository initialization: document created as a design-space placeholder;
   no architectural decisions made yet.
@@ -504,3 +627,18 @@ equations, parameters, and recorded Phase-1 results are untouched.
   method — it has its own `PrecisionGainLayer` / `BeliefNetworkV02`.
   Evaluated on the frozen Paper-A Phase-1 protocol (`docs/research_log.md`,
   2026-09-09). CellV0.1 and the `BeliefLayer` methods are unchanged.
+- CellV0.3 — Conflict-Normalized Belief Cell (2026-09-09): a **third**
+  separate CellV0-line cell (new §10), user-specified in full and
+  implemented in `src/models/architecture_v0/conflict_normalized.py`
+  (`ConflictNormalizedLayer` / `BeliefNetworkV03`). Same
+  one-signed-matrix parameterization as CellV0.2, but CellV0.2's
+  population-relative gain `2 pi / (pi + mean pi)` is removed entirely:
+  each cell forms a precision-weighted signed consensus, takes the
+  A-weighted variance of the signed messages as its conflict `u`,
+  propagates `e` conservatively (`e_out = sum_j A_ij pi_j`), derives
+  `pi_out = e_out / (1 + e_out u_out)`, and folds `sqrt(pi_out)` into its
+  own `tanh` activation — so *absolute* confidence is causally
+  load-bearing. Readout consumes `mu` directly (not re-scaled). Evaluated
+  on the frozen Paper-A Phase-1 protocol (`docs/research_log.md`,
+  2026-09-09). CellV0.1, CellV0.2, and the `BeliefLayer` methods are
+  unchanged.

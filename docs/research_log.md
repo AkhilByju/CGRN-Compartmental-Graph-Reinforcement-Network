@@ -2311,3 +2311,79 @@ temperature, no new datasets, no CellV0.2.1.
 specification with an explicit implement-and-evaluate instruction; CellV0.1
 and its recorded results are untouched; the comparison reuses the recorded
 arms rather than re-running them; nothing was tuned after seeing results.
+
+## 2026-09-09 — CellV0.3 (Conflict-Normalized Belief Cell): implemented, unevaluated
+
+**Context:** User specified a third CellV0-line cell in full mathematical
+detail and asked for an implementation + evaluation on the *existing frozen*
+Paper-A Phase-1 protocol. This entry records the implementation; the frozen
+benchmark result is the next entry, written after the 42 CellV0.3 runs.
+
+**Motivation.** CellV0.2's frozen Phase-1 result (previous entries) found its
+relative precision gain `2 pi / (pi + mean_k pi_k)` sitting at ~0.99–1.00 in
+every trained network — the confidence pathway was close to inert. The
+mathematical reason: that gain is *population-relative*. Scale every source's
+precision down by the same factor and the gain is unchanged, so absolute
+confidence cannot propagate. CellV0.3 removes the population-relative
+normalization entirely.
+
+**What CellV0.3 is.** A separate belief-aggregation operator, **not** a sixth
+`BeliefLayer` method and **not** a change to CellV0.2. Implemented in
+`src/models/architecture_v0/conflict_normalized.py`
+(`ConflictNormalizedLayer`, `BeliefNetworkV03`); documented in
+`docs/architecture_v0.md` §10. Same `BeliefCell` state and the same
+one-signed-matrix parameterization as CellV0.2 (`V` `[out, in]`,
+`gamma = softplus(gain_raw)` `[out]`, `bias` `[out]` — per-layer count
+`out*(in+2)`), input belief `e = 1, u = 0`.
+
+Per layer, source `(mu_j, e_j, u_j)`, output cell `i`:
+
+```text
+pi_j    = e_j / (1 + e_j u_j)                    usable precision (no population mean, no relative gain)
+row_l1_i = max(sum_j |V_ij|, eps)
+A_ij    = |V_ij| / row_l1_i                      sum_j A_ij ~ 1
+S_ij    = V_ij  / row_l1_i
+e_i     = sum_j A_ij pi_j                        inherited support   (GEMM; convex -> <= max_j pi_j)
+c_i     = (sum_j S_ij pi_j mu_j) / e_i           precision-weighted signed consensus (GEMM)
+s_i     = (sum_j A_ij pi_j mu_j^2) / e_i         second moment (GEMM)
+u_i     = max(0, s_i - c_i^2)                    conflict = A-weighted variance of sign(V_ij) mu_j
+pi_i    = e_i / (1 + e_i u_i)                    output precision  (<= e_i)
+mu_i    = tanh(gamma_i c_i sqrt(pi_i) + b_i)     sqrt(pi_i) folded into THIS cell's activation
+```
+
+The defining change from CellV0.2: `sqrt(pi_i)` multiplies the pre-activation
+of the same neuron whose belief it describes, in the same forward step —
+gradients flow `mu_out -> pi_out -> e_out/u_out -> input e/u`. The readout
+consumes `final_mu` directly (not re-scaled by precision — each cell already
+did that). `gain_raw` inverse-softplus-initialized so `gamma_i = ||V_i||_1`
+at init; the zero-conflict/unit-precision case reduces *exactly* to
+`tanh(F.linear(mu, V, b))` (but, unlike CellV0.2, a generic neutral-
+confidence input does not — `sqrt(pi_i) = 1` needs `u_i = 0` too).
+
+**Properties verified** (`tests/test_conflict_normalized.py`, 23 tests; full
+suite 517 pass): shape/dtype/device incl. MPS; `e_out > 0`, `u_out >= 0`,
+`pi_out > 0`, all finite; `e_out` a convex combination of source precisions
+(`e_out <= max pi`, `pi_out <= e_out`); perfect agreement → `u_out ≈ 0` →
+`pi_out ≈ e_out`; with consensus held fixed, more disagreement raises
+`u_out`, lowers `pi_out`, and shrinks the confidence-scaled activation;
+**absolute-confidence sensitivity** — `pi = [1,1,1]` vs `[0.1,0.1,0.1]`
+(same `mu`, same relative pattern, same weight structure) produce a strictly
+lower `sqrt(pi_out)` and a different activation, the property CellV0.2 lost;
+changing only source `e`/`u` moves `mu_out`; uniform replication invariance
+×2/×4/×8/×16 to float64; positive V-row-scaling invariance of the normalized
+quantities; zero-conflict/unit-precision reduction to
+`tanh(F.linear(mu, V, b))` to ~1e-10; gradients reach source `mu`/`e`/`u`,
+`V`, `gain_raw`, `bias` (and a pure-content loss still reaches `e`/`u`
+through the precision path); torch-dispatch check confirming **no rank-3
+`(B, out, in)` edge tensor** and no batched matmul; AdamW smoke train reduces
+loss with no NaNs.
+
+**Isolated-layer cost** (`experiments/paper_a/bench_cellv03_layer.py`) is the
+next entry's table.
+
+**Why this is allowed under CLAUDE.md §2:** like CellV1, `BeliefLayer`
+Methods D/E, and CellV0.2, CellV0.3 is the user's own full specification
+delivered with an explicit "implement and evaluate" instruction — not an
+agent-invented aggregation rule. It is kept strictly separate (own module,
+own experiment id `paper_a_phase1_cellv03`, own summarizer); CellV0.1's and
+CellV0.2's equations and recorded results are untouched.

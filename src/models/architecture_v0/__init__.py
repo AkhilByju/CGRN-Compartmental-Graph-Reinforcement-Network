@@ -22,11 +22,27 @@ aggregation operator, specified in full by the user and distinct from the
 `BeliefLayer` methods: it drops the relevance-gate matrix entirely, carries
 one signed connection matrix `V` plus a per-output gain/bias, and its
 readout consumes confidence. Same `BeliefCell` state; input belief
-`e = 1, u = 0`. See docs/architecture_v0.md Sec 10 and
+`e = 1, u = 0`. See docs/architecture_v0.md Sec 9 and
+docs/research_log.md. This does not unblock `model.py` or any other stub.
+
+`conflict_normalized.py` implements **CellV0.3** -- the Conflict-Normalized
+Belief Cell (`ConflictNormalizedLayer`, `BeliefNetworkV03`). A THIRD,
+user-specified CellV0-line operator: same one-signed-matrix parameterization
+as CellV0.2 but with CellV0.2's population-relative precision gain removed
+entirely. Each cell forms a precision-weighted consensus, measures the
+conflict among its sources, derives its own usable precision
+`pi = e / (1 + e u)`, and folds `sqrt(pi)` into its *own* `tanh` activation
+in the same forward step, so absolute confidence is causally load-bearing
+rather than passive. Input belief `e = 1, u = 0`; readout consumes `mu`
+directly (not re-scaled). See docs/architecture_v0.md Sec 10 and
 docs/research_log.md. This does not unblock `model.py` or any other stub.
 
 Every other module in this package (`cluster.py`, `graph.py`,
 `dynamics.py`, `encoder.py`, `decoder.py`, `model.py`) still raises
 `NotImplementedError` and remains unspecified. See docs/architecture_v0.md
 and CLAUDE.md Sec 2 before implementing any of them.
+
+`precision_gain.py` and `conflict_normalized.py` are the CellV0.2 / CellV0.3
+lines; `belief_network.py` + `integration.py` are CellV0.1. All three are
+frozen once evaluated -- do not tune or re-derive their equations.
 """
