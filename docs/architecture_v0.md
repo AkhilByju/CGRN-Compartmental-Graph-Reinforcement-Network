@@ -473,11 +473,17 @@ equations, parameters, and recorded Phase-1 results are untouched.
 
 ## 10. CellV0.3 — Conflict-Normalized Belief Cell (separate line, IMPLEMENTED)
 
-**Status: SPECIFIED (user, 2026-09-09) and IMPLEMENTED**
-(`src/models/architecture_v0/conflict_normalized.py`). Documented here as
-*implemented, unevaluated*; the frozen Paper-A Phase-1 result is recorded in
-`docs/research_log.md` and `experiments/paper_a/phase1_v03_results.md` after
-the 42-run sweep.
+**Status: SPECIFIED (user, 2026-09-09), IMPLEMENTED and EVALUATED**
+(`src/models/architecture_v0/conflict_normalized.py`). The frozen Paper-A
+Phase-1 result is in `docs/research_log.md` (2026-09-09) and
+`experiments/paper_a/phase1_v03_results.md`: CellV0.3 removes CellV0.2's
+absolute-confidence cancellation and its output precision genuinely varies
+example/cell-wise (CoV 0.15–0.28, vs CellV0.2's near-constant relative
+gain), and on the image tasks training drives the confidence scale
+`sqrt(pi_out)` down to ~0.57 to attenuate layer 2 — but the headline
+accuracy is **indistinguishable from CellV0.2's** on all 7 datasets. Making
+confidence causally load-bearing this way bought no accuracy on the frozen
+screen. No redesign (Sec 10.6).
 
 CellV0.3 is a **third** CellV0-line aggregation operator, specified in full
 by the user. It keeps CellV0.2's parameterization exactly — one signed `V`

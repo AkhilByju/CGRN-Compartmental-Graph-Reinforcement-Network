@@ -2387,3 +2387,126 @@ delivered with an explicit "implement and evaluate" instruction — not an
 agent-invented aggregation rule. It is kept strictly separate (own module,
 own experiment id `paper_a_phase1_cellv03`, own summarizer); CellV0.1's and
 CellV0.2's equations and recorded results are untouched.
+
+## 2026-09-09 — CellV0.3: frozen Paper-A Phase-1 results
+
+**Context:** CellV0.3 implemented (previous entry). Run through the
+**identical frozen** Phase-1 protocol — same 7 datasets, same seeded splits,
+{25%, 100%}, seeds 0/1/2, AdamW (lr=1e-2, wd=0), best-val restore,
+~1500-step patience, 15000-step cap, CPU. 42 CellV0.3 runs (experiment id
+`paper_a_phase1_cellv03`). CellV0.1 / matched-MLP / CellV0.2 arms are **not**
+re-run — their recorded records are the comparison. Nothing tuned; equations
+frozen before the run. Full tables:
+`experiments/paper_a/phase1_v03_results.md`. No divergence, no NaNs, no
+step-cap hits; whole sweep ~3.9 min wall-clock.
+
+**Sizing.** CellV0.3's parameterization is identical to CellV0.2's, so its
+budget-fitted hidden width matches CellV0.2's exactly (digits 123, MNIST 157,
+tabular 83–93) — ~1.4–1.9× CellV0.1's cell count at the same budget.
+
+**A. Headline (mean of 3 seeds), CellV0.3 − recorded arm:**
+
+| dataset | vs matched MLP (25 / 100) | vs CellV0.1 (25 / 100) | vs CellV0.2 (25 / 100) |
+|---|---|---|---|
+| breast_cancer | −0.006 / +0.000 | +0.003 / −0.003 | +0.000 / +0.000 |
+| wine | +0.000 / −0.009 | +0.019 / +0.000 | +0.009 / +0.000 |
+| digits | +0.002 / −0.003 | **+0.055 / +0.037** | −0.003 / −0.003 |
+| diabetes | +0.156 / +0.074 | **−0.203 / −0.007** | −0.057 / +0.037 |
+| california_housing | +0.041 / +0.094 | +0.024 / +0.014 | −0.001 / −0.007 |
+| mnist (acc) | +0.017 / +0.017 | +0.010 / +0.002 | +0.000 / −0.000 |
+| fashion_mnist (acc) | +0.023 / +0.025 | +0.013 / +0.011 | +0.003 / +0.006 |
+
+Vs the parameter-matched MLP: CellV0.3 ahead by >0.01 in **8 of 14**
+(dataset, fraction) cells, behind by >0.01 in **0**, within ±0.01 in 6 —
+**identical standing to CellV0.2**.
+
+- **CellV0.3 ≈ CellV0.2 on accuracy, everywhere.** Every paired-seed mean
+  difference vs CellV0.2 is within ±0.006 except diabetes-25%
+  (−0.057, inside the unstable-regression-baseline noise: CellV0.3 diabetes-25%
+  R²=0.173±0.110, all 3 seeds early-stop at step 50). Removing CellV0.2's
+  population-relative gain and folding `sqrt(pi_out)` into each cell's own
+  activation changed the frozen-benchmark numbers by ~nothing.
+- **Images:** the every-seed CellV0.1/MLP edge holds — all 12
+  MNIST/Fashion-MNIST seed comparisons vs the matched MLP are positive
+  (+0.017…+0.025 on the mean). Fashion-MNIST is a hair above CellV0.2
+  (+0.003/+0.006, 2 of 3 seeds positive each fraction) — within noise.
+- **Digits:** CellV0.3 keeps CellV0.2's fix of CellV0.1's one clean
+  public-data loss (+0.055/+0.037 vs CellV0.1) — again the extra hidden
+  cells the cheaper parameterisation buys, not the belief state.
+- **Diabetes/California:** same picture as CellV0.2 — above the (unstable)
+  matched MLP, below the stable CellV0.1 on diabetes, roughly level with
+  CellV0.1 on California.
+
+**B. Cost** (`experiments/paper_a/bench_cellv03_layer.py`, CPU, 4 threads,
+forward+backward ms/iter, 100 iters — single wall-clock timings, noisy):
+
+| in→out (batch) | CellV0.3 | CellV0.2 | CellV0.1 (`scale_stable_precision`) | Linear+Tanh | V0.3 / V0.2 | V0.3 / V0.1 |
+|---|---|---|---|---|---|---|
+| 30→83 (128) | 0.30 | 0.17 | 1.07 | 0.07 | 1.7× | 0.28× |
+| 64→123 (128) | 0.38 | 0.22 | 3.00 | 0.09 | 1.8× | 0.13× |
+| 784→157 (128) | 1.41 | 0.82 | 43.9 | 0.17 | 1.7× | 0.03× |
+| 157→157 (128) | 0.73 | 0.49 | 7.88 | 0.10 | 1.5× | 0.09× |
+| 256→256 (256) | 1.93 | 0.91 | 50.8 | 0.34 | 2.1× | 0.04× |
+
+CellV0.3 is ~1.5–2.1× CellV0.2 (it materialises both `A` and `S`
+`[out, in]` weight matrices and takes a `sqrt`), still **3.5–30× cheaper
+than CellV0.1's `(B, out, in)` broadcast** and ~4–8× a plain `Linear+Tanh`.
+Same per-layer parameter count as CellV0.2 (`out*(in+2)`).
+
+**C. Does CellV0.3 use its belief state? — YES, and this is the one real
+difference from CellV0.2.** The CellV0.2 verdict found its relative-gain
+diagnostic pinned at mean ≈ 0.99–1.00 (the confidence pathway was
+effectively the identity). CellV0.3's is not:
+
+- **Output precision genuinely varies.** Coefficient of variation of
+  `pi_out = e_out/(1+e_out u_out)` across the test set × cells is
+  **0.15–0.28 at every dataset**, at both layers, at init *and* at the best
+  checkpoint — never collapses toward 0. (Contrast CellV0.2's relative gain:
+  per-cell std ≈ 0.01–0.09 around a mean of ~1.)
+- **Training actively recruits the attenuation on the image tasks.** On
+  MNIST and Fashion-MNIST, layer-2 mean conflict `u_out` rises from ~0.12
+  (untrained) to ~0.65–0.68 (best checkpoint), layer-2 mean `pi_out` falls
+  0.48 → 0.33, and the confidence scale `sqrt(pi_out)` folded into each
+  cell's activation falls **0.69 → 0.57**. The network chooses to damp its
+  second layer through the precision channel. On the tabular/regression
+  sets layer-2 `|consensus|` stays near zero (~0.04–0.06), so
+  `gamma·consensus·sqrt(pi_out)` has little for the confidence factor to
+  scale there.
+- The **absolute-confidence cancellation is provably gone** — a dedicated
+  test (`tests/test_conflict_normalized.py`) pins that `pi=[1,1,1]` and
+  `pi=[0.1,0.1,0.1]` sources (same `mu`, same relative pattern, same weight
+  structure) now yield a strictly lower `sqrt(pi_out)` and a different
+  activation, where CellV0.2 produced byte-identical outputs.
+
+**D. Numeric-range flag.** Digits (5 of 6 seed×fraction cells) again has a
+single test-example × cell with layer-1 output precision ~1e-11 — the same
+near-constant-standardised-pixel artefact flagged for CellV0.1 and CellV0.2
+on Digits (`|consensus|` at init reaches ~180 on the affected cells). All
+values finite; no NaN, no divergence, no protocol impact.
+
+**Verdict — CellV0.3 fixes CellV0.2's specific mathematical defect and makes
+the belief state causally load-bearing, but buys no accuracy for it.** The
+population-relative gain is removed; output precision now varies
+example/cell-wise (CoV 0.15–0.28) instead of sitting at a constant; and on
+the image tasks the optimiser *uses* the channel, driving `sqrt(pi_out)`
+down to ~0.57 to attenuate layer 2. Yet on the frozen 7-dataset screen the
+headline numbers are **indistinguishable from CellV0.2's** (every paired
+mean within ±0.006 outside the noisy diabetes-25% regression), and the
+standing vs the parameter-matched MLP is identical (ahead in 8/14 cells,
+behind in 0). So: on this benchmark, a data-dependent per-cell confidence
+that genuinely modulates the activation behaves like — and scores like — a
+plain learned activation gain. The CellV0.2/CellV0.3 edge over CellV0.1 and
+the matched MLP is still carried entirely by the shared content-pathway
+reparameterisation (one normalised signed `V` + a separate positive gain,
+~1.5× hidden cells per parameter), not by propagating evidence/conflict.
+
+Reported as evidence, frozen result first: **no** exponent change, **no**
+learned precision exponent, **no** precision floor beyond numerical safety,
+**no** residual paths, **no** gates, **no** re-initialisation, **no**
+per-dataset tuning, **no** CellV0.3.1 (Sec 20). CellV0.1 and CellV0.2
+equations and recorded results are untouched.
+
+**Why:** identical frozen protocol; CellV0.3 is the user's own full
+specification with an explicit implement-and-evaluate instruction; the
+comparison reuses the recorded arms rather than re-running them; nothing was
+tuned after seeing results.
