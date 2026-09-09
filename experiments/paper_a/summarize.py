@@ -56,7 +56,9 @@ _HIGH_VARIANCE_MULT = 3.0  # CellV0.1 seed-std > this * matched-MLP seed-std -> 
 
 
 def _load_records(raw_dir: Path, experiment_id: str) -> list[dict]:
-    rows = []
+    # run_id ends in a UTC timestamp, so lexicographic order == chronological;
+    # if a cell was run twice, the later record wins (keyed by identity).
+    latest: dict[tuple, dict] = {}
     for path in sorted(raw_dir.glob("*.json")):
         if path.name.endswith("_history.json"):
             continue
@@ -67,34 +69,35 @@ def _load_records(raw_dir: Path, experiment_id: str) -> list[dict]:
         extra = rec["config"].get("extra", {})
         tm = rec["test_metrics"]
         vm = rec.get("validation_metrics", {})
-        rows.append(
-            {
-                "dataset": rec["dataset"],
-                "family": rec["architecture"],
-                "seed": rec["seed"],
-                "train_fraction": extra.get("train_fraction"),
-                "task_type": extra.get("task_type"),
-                "is_binary": extra.get("is_binary", False),
-                "headline_metric": extra.get("headline_metric"),
-                "params": rec["parameter_count"],
-                "n_train_used": extra.get("dataset_meta", {}).get("n_train_used"),
-                "best_val_step": vm.get("best_val_step"),
-                "total_steps": rec["steps_completed"],
-                "train_wall_clock_s": rec["train_wall_clock_seconds"],
-                "time_per_step_s": tm.get("time_per_step_seconds"),
-                "diverged": bool(extra.get("diverged", tm.get("diverged", False))),
-                "cap_hit": bool(extra.get("cap_hit", tm.get("cap_hit", False))),
-                "accuracy": tm.get("accuracy"),
-                "macro_f1": tm.get("macro_f1"),
-                "roc_auc": tm.get("roc_auc"),
-                "rmse": tm.get("rmse"),
-                "r2": tm.get("r2"),
-                "mae": tm.get("mae"),
-                "sizing": extra.get("sizing", {}),
-                "diagnostics": extra.get("diagnostics", {}),
-            }
+        key = (
+            rec["dataset"], rec["architecture"], rec["seed"], extra.get("train_fraction")
         )
-    return rows
+        latest[key] = {
+            "dataset": rec["dataset"],
+            "family": rec["architecture"],
+            "seed": rec["seed"],
+            "train_fraction": extra.get("train_fraction"),
+            "task_type": extra.get("task_type"),
+            "is_binary": extra.get("is_binary", False),
+            "headline_metric": extra.get("headline_metric"),
+            "params": rec["parameter_count"],
+            "n_train_used": extra.get("dataset_meta", {}).get("n_train_used"),
+            "best_val_step": vm.get("best_val_step"),
+            "total_steps": rec["steps_completed"],
+            "train_wall_clock_s": rec["train_wall_clock_seconds"],
+            "time_per_step_s": tm.get("time_per_step_seconds"),
+            "diverged": bool(extra.get("diverged", tm.get("diverged", False))),
+            "cap_hit": bool(extra.get("cap_hit", tm.get("cap_hit", False))),
+            "accuracy": tm.get("accuracy"),
+            "macro_f1": tm.get("macro_f1"),
+            "roc_auc": tm.get("roc_auc"),
+            "rmse": tm.get("rmse"),
+            "r2": tm.get("r2"),
+            "mae": tm.get("mae"),
+            "sizing": extra.get("sizing", {}),
+            "diagnostics": extra.get("diagnostics", {}),
+        }
+    return list(latest.values())
 
 
 def _headline(row: dict) -> float:

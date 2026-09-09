@@ -26,6 +26,7 @@ import torch  # noqa: E402
 from torch.utils.data import DataLoader, TensorDataset  # noqa: E402
 
 from experiments.paper_a.datasets import PreparedDataset  # noqa: E402
+from experiments.paper_a.models import batched_forward  # noqa: E402
 from src.evaluation.regression import r_squared  # noqa: E402
 
 # Shared protocol constants (Paper-A task Sec 7).
@@ -70,7 +71,7 @@ def _val_loss_and_metric(
     task_type: str,
 ) -> tuple[float, float]:
     model.eval()
-    pred = model(x_val)
+    pred = batched_forward(model, x_val)
     loss = loss_fn(pred, y_val).item()
     if task_type == "classification":
         metric = (pred.argmax(dim=-1) == y_val).float().mean().item()

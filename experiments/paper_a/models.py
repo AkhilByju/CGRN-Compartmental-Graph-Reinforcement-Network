@@ -250,6 +250,21 @@ def build_model(family: str, in_features: int, out_features: int, param_budget: 
     return _BUILDERS[family](in_features, out_features, param_budget)
 
 
+# `BeliefLayer` broadcasts to `(batch, out_cells, in_cells)`, so a full-set
+# forward on a 10k-row MNIST/Fashion-MNIST split allocates multi-GB
+# intermediates. Every evaluation forward (val during training, test, belief
+# diagnostics) goes through this chunker instead.
+EVAL_CHUNK = 1024
+
+
+@torch.no_grad()
+def batched_forward(model: nn.Module, x: torch.Tensor, chunk: int = EVAL_CHUNK) -> torch.Tensor:
+    model.eval()
+    if x.shape[0] <= chunk:
+        return model(x)
+    return torch.cat([model(x[i : i + chunk]) for i in range(0, x.shape[0], chunk)])
+
+
 # ---------------------------------------------------------------------------
 # CellV0.1 internal diagnostics (Paper-A task Sec 9 -- lightweight only, not
 # an evaluation target)
@@ -276,21 +291,43 @@ def _forward_layers(model: nn.Module, x: torch.Tensor) -> tuple[BeliefCell, Beli
 
 
 @torch.no_grad()
-def belief_diagnostics(model: nn.Module, x: torch.Tensor, eps: float = 1e-8) -> dict[str, float]:
+def belief_diagnostics(
+    model: nn.Module, x: torch.Tensor, eps: float = 1e-8, chunk: int = EVAL_CHUNK
+) -> dict[str, float]:
     """Mean `e`, mean `u`, mean `e / (u^2 + eps)`, and min/max of `e` and `u`
     for each `BeliefLayer` -- numerical-stability diagnostics, per the
     Paper-A task's explicit instruction not to treat these as headline
-    metrics."""
+    metrics. Chunked (the `BeliefLayer` broadcast is memory-heavy at MNIST
+    batch sizes)."""
     model.eval()
-    b1, b2 = _forward_layers(model, x)
+    acc: dict[str, list] = {}
+    n_total = x.shape[0]
+    for i in range(0, n_total, chunk):
+        b1, b2 = _forward_layers(model, x[i : i + chunk])
+        w = b1.evidence.shape[0]
+        for tag, b in (("layer1", b1), ("layer2", b2)):
+            e, u = b.evidence, b.uncertainty
+            row = {
+                "sum_e": float(e.sum()),
+                "sum_u": float(u.sum()),
+                "sum_e_over_u2": float((e / (u**2 + eps)).sum()),
+                "n": e.numel(),
+                "min_e": float(e.min()),
+                "max_e": float(e.max()),
+                "min_u": float(u.min()),
+                "max_u": float(u.max()),
+                "rows": w,
+            }
+            acc.setdefault(tag, []).append(row)
+
     out: dict[str, float] = {}
-    for tag, b in (("layer1", b1), ("layer2", b2)):
-        e, u = b.evidence, b.uncertainty
-        out[f"diag_{tag}_mean_e"] = float(e.mean())
-        out[f"diag_{tag}_mean_u"] = float(u.mean())
-        out[f"diag_{tag}_mean_e_over_u2"] = float((e / (u**2 + eps)).mean())
-        out[f"diag_{tag}_min_e"] = float(e.min())
-        out[f"diag_{tag}_max_e"] = float(e.max())
-        out[f"diag_{tag}_min_u"] = float(u.min())
-        out[f"diag_{tag}_max_u"] = float(u.max())
+    for tag, rows in acc.items():
+        n = sum(r["n"] for r in rows)
+        out[f"diag_{tag}_mean_e"] = sum(r["sum_e"] for r in rows) / n
+        out[f"diag_{tag}_mean_u"] = sum(r["sum_u"] for r in rows) / n
+        out[f"diag_{tag}_mean_e_over_u2"] = sum(r["sum_e_over_u2"] for r in rows) / n
+        out[f"diag_{tag}_min_e"] = min(r["min_e"] for r in rows)
+        out[f"diag_{tag}_max_e"] = max(r["max_e"] for r in rows)
+        out[f"diag_{tag}_min_u"] = min(r["min_u"] for r in rows)
+        out[f"diag_{tag}_max_u"] = max(r["max_u"] for r in rows)
     return out

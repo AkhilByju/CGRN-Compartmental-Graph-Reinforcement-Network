@@ -24,6 +24,7 @@ from experiments.paper_a.datasets import PreparedDataset, prepare_dataset  # noq
 from experiments.paper_a.models import (  # noqa: E402
     BELIEF_FAMILIES,
     MODEL_FAMILIES,
+    batched_forward,
     belief_diagnostics,
     build_model,
 )
@@ -67,7 +68,7 @@ def evaluate(model: torch.nn.Module, prepared: PreparedDataset, device: torch.de
     x_test = prepared.x_test.to(device)
 
     infer_start = time.perf_counter()
-    logits = model(x_test)
+    logits = batched_forward(model, x_test)
     if device.type == "mps":
         torch.mps.synchronize()
     inference_wall_clock = time.perf_counter() - infer_start
