@@ -48,11 +48,17 @@ def main() -> None:
     parser.add_argument("--fractions", type=float, nargs="+", default=list(TRAIN_FRACTIONS))
     parser.add_argument("--seeds", type=int, nargs="+", default=list(SEEDS))
     parser.add_argument("--device", default=None, help="cpu / mps / cuda (default: auto)")
+    parser.add_argument(
+        "--threads", type=int, default=None,
+        help="torch CPU thread cap (set when running shards in parallel)",
+    )
     parser.add_argument("--max-steps", type=int, default=15_000)
     parser.add_argument("--results-dir", default=str(RESULTS_RAW))
     parser.add_argument("--summary-out", default=str(RESULTS_PROCESSED / "phase1_runs.json"))
     args = parser.parse_args()
 
+    if args.threads:
+        torch.set_num_threads(args.threads)
     device = torch.device(args.device) if args.device else None
     Path(args.results_dir).mkdir(parents=True, exist_ok=True)
     Path(args.summary_out).parent.mkdir(parents=True, exist_ok=True)

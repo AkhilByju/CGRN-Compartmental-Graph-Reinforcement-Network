@@ -51,6 +51,7 @@ def main() -> None:
     parser.add_argument("--datasets", nargs="+", default=list(ABLATION_DATASETS))
     parser.add_argument("--seeds", type=int, nargs="+", default=list(ABLATION_SEEDS))
     parser.add_argument("--device", default=None)
+    parser.add_argument("--threads", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=15_000)
     parser.add_argument("--results-dir", default=str(RESULTS_RAW))
     parser.add_argument(
@@ -58,6 +59,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.threads:
+        torch.set_num_threads(args.threads)
     device = torch.device(args.device) if args.device else None
     Path(args.results_dir).mkdir(parents=True, exist_ok=True)
     Path(args.summary_out).parent.mkdir(parents=True, exist_ok=True)
