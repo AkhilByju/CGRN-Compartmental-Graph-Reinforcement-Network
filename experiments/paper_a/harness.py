@@ -23,10 +23,12 @@ import torch  # noqa: E402
 from experiments.paper_a.datasets import PreparedDataset, prepare_dataset  # noqa: E402
 from experiments.paper_a.models import (  # noqa: E402
     BELIEF_FAMILIES,
+    CELLV02_FAMILY,
     MODEL_FAMILIES,
     batched_forward,
     belief_diagnostics,
     build_model,
+    precision_gain_diagnostics,
 )
 from experiments.paper_a.training import (  # noqa: E402
     DEFAULT_BATCH_SIZE,
@@ -43,7 +45,11 @@ from src.utilities.config import ExperimentConfig, make_run_id  # noqa: E402
 from src.utilities.device import get_device  # noqa: E402
 from src.utilities.seeding import set_seed  # noqa: E402
 
-ALL_FAMILIES: tuple[str, ...] = (*MODEL_FAMILIES, "cellv0.1_fixed_confidence")
+ALL_FAMILIES: tuple[str, ...] = (
+    *MODEL_FAMILIES,
+    "cellv0.1_fixed_confidence",
+    CELLV02_FAMILY,
+)
 EXPERIMENT_ID = "paper_a_phase1"
 
 # Early-stopping cadence is derived from the validation-set size so that a
@@ -152,6 +158,8 @@ def run_one(
     diagnostics: dict[str, float] = {}
     if family in BELIEF_FAMILIES:
         diagnostics = belief_diagnostics(model, prepared.x_test.to(device))
+    elif family == CELLV02_FAMILY:
+        diagnostics = precision_gain_diagnostics(model, prepared.x_test.to(device))
 
     headline = headline_metric_name(prepared.task_type)
     efficiency = {

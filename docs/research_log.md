@@ -2140,3 +2140,78 @@ Paper-A task spec verbatim; `experiments/paper_a/` is experiment-local
 composition of existing `src/` infrastructure following the
 `experiments/*/harness.py` pattern — no new architecture, math, or
 training procedure, and CellV0.1's equations are unchanged.
+
+## 2026-09-09 — CellV0.2 (Conservative Precision-Gain Cell): implemented, unevaluated
+
+**Context:** User specified a second CellV0-line cell in full mathematical
+detail and asked for an implementation + evaluation on the *existing frozen*
+Paper-A Phase-1 protocol (not a new benchmark suite). This entry records the
+implementation; the frozen benchmark results are the next entry, written
+after the 42 CellV0.2 runs complete.
+
+**What CellV0.2 is.** A separate belief-aggregation operator, **not** a sixth
+`BeliefLayer` method — it removes CellV0.1's relevance-gate matrix
+(`a_ij`/`g_ij`) entirely. Implemented in
+`src/models/architecture_v0/precision_gain.py` (`PrecisionGainLayer`,
+`BeliefNetworkV02`); documented in `docs/architecture_v0.md` §9. Same
+`BeliefCell` state, but the *input* belief is `e = 1, u = 0`.
+
+Per layer (`V` `[out, in]`, `gamma = softplus(gain_raw)` `[out]`, `bias`
+`[out]` — the only three parameter objects):
+
+```text
+pi_j   = e_j / (1 + e_j u_j)                 effective precision
+r_j    = 2 pi_j / (pi_j + mean_k pi_k)       relative gain, in (0, 2), mean NOT detached
+x_j    = r_j mu_j
+c_i    = (sum_j x_j V_ij) / sum_j|V_ij|      signed consensus            (GEMM)
+mu_i   = tanh(gamma_i c_i + bias_i)
+e_i    = (sum_j pi_j |V_ij|) / sum_j|V_ij|   inherited support (convex)   (GEMM)
+u_i    = max(0, (sum_j x_j^2 |V_ij|)/sum_j|V_ij| - c_i^2)                 (GEMM)
+```
+
+`gain_raw` is inverse-softplus-initialized so `gamma_i = ||V_i||_1` at
+init → the content path reduces *exactly* to `tanh(F.linear(mu, V, b))` on a
+neutral-confidence input, and `(V, gamma)` can represent any linear weight
+row. `BeliefNetworkV02` = two such layers + a readout applied to
+`relative_gain(final_precision) * final_mu` (the readout consumes
+confidence; it does not emit a belief state).
+
+**Properties verified** (`tests/test_precision_gain.py`, 22 tests; full
+suite 494 pass): shape/dtype/device incl. MPS; `e > 0`, `u >= 0`, all
+finite; `0 < relative_gain < 2` and `= 1` for equal precisions;
+neutral-confidence reduction to `tanh(F.linear(mu, V, b))` to ~1e-5;
+linear-row expressivity; uniform replication invariance ×2/×4/×8/×16 to
+~1e-9 (float64); `e_out` a convex combination of source precisions
+(`e_out <= max pi`, `pi_out <= e_out`); conflicting messages → higher
+`u_out` → lower effective precision at fixed inherited support; gradients
+reach source `mu`/`e`/`u`, `V`, `gain_raw`, `bias`; positive row-scaling of
+`V` leaves the normalized consensus / `e_out` / `u_out` unchanged;
+torch-dispatch check confirming **no rank-3 `(B, out, in)` edge tensor** and
+no batched matmul; AdamW smoke train reduces loss with no NaNs.
+
+**Isolated-layer cost** (`experiments/paper_a/bench_cellv02_layer.py`, CPU,
+1 thread, forward+backward ms/iter over 200 iters, approximate — single
+wall-clock timings are noisy):
+
+| in→out (batch) | CellV0.2 | CellV0.1 (`scale_stable_precision`) | Linear+Tanh | V0.2 / V0.1 | V0.2 / Linear |
+|---|---|---|---|---|---|
+| 30→83 (128) | 0.20 | 1.73 | 0.08 | 0.11× | 2.4× |
+| 64→123 (128) | 0.27 | 4.68 | 0.12 | 0.06× | 2.3× |
+| 784→157 (128) | 0.98 | 36.9 | 0.27 | 0.03× | 3.6× |
+| 157→157 (128) | 0.56 | 8.13 | 0.17 | 0.07× | 3.2× |
+| 256→256 (256) | 1.30 | 41.3 | 0.34 | 0.03× | 3.8× |
+
+CellV0.2's three GEMMs are ~15–35× cheaper than CellV0.1's `(B, out, in)`
+broadcast fusion, and ~2–4× a plain `Linear+Tanh`. Parameter-count
+formulas: CellV0.2 per layer `out·(in+2)`; CellV0.1 per layer `out·(2·in+1)`.
+
+**Why this is allowed under CLAUDE.md §2:** like CellV1 and `BeliefLayer`
+Methods D/E, CellV0.2 is the user's own full specification, delivered with
+an explicit "implement and evaluate" instruction — not an agent-invented
+aggregation rule. It is kept strictly separate from CellV0.1 (own module,
+own experiment id `paper_a_phase1_cellv02`, own summarizer); CellV0.1's
+equations and recorded results are untouched. The README's Phase-1
+anti-cherry-picking line ("do not create CellV0.2") governed the *screening
+run itself* — this is a later, separately-commissioned architecture line
+run through the identical frozen protocol, reusing the recorded CellV0.1 /
+matched-MLP arms for comparison rather than re-running or altering them.

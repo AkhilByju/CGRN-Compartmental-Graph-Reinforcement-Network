@@ -36,12 +36,22 @@ from src.evaluation.efficiency import count_parameters  # noqa: E402
 from src.models.architecture_v0.belief_network import BeliefNetwork  # noqa: E402
 from src.models.architecture_v0.cell import BeliefCell  # noqa: E402
 from src.models.architecture_v0.integration import BeliefLayer  # noqa: E402
+from src.models.architecture_v0.precision_gain import (  # noqa: E402
+    BeliefNetworkV02,
+    effective_precision,
+    relative_gain,
+)
 from src.models.baselines.mlp import MLPBaseline, match_hidden_dim  # noqa: E402
 
 CELLV01_AGGREGATION = "scale_stable_precision"
 STATE_COUNT_MULTIPLIER = 3  # (mu, e, u) -- three runtime scalar states per cell
 
+# The default Phase-1 screening grid -- FROZEN (Paper-A task Sec 12). CellV0.2
+# is a later, separately-commissioned architecture line evaluated on the same
+# frozen protocol; it is deliberately NOT a member of this tuple, so
+# `run_phase1.py` never sweeps it into the original screen.
 MODEL_FAMILIES: tuple[str, ...] = ("cellv0.1", "mlp_matched", "mlp_state_count")
+CELLV02_FAMILY = "cellv0.2"
 
 _MLP_SEARCH_RANGE = range(1, 4000)
 
@@ -68,6 +78,43 @@ def belief_hidden_cells_for_budget(
     stays within `param_budget` (Paper-A task Sec 5)."""
     hc = 1
     while belief_param_count(hc + 1, in_features, out_features) <= param_budget:
+        hc += 1
+    return hc
+
+
+# ---------------------------------------------------------------------------
+# CellV0.2 sizing -- the Conservative Precision-Gain Cell
+# (`src/models/architecture_v0/precision_gain.py`, docs/architecture_v0.md
+# Sec 10). One signed connection matrix `V` [out, in] plus a per-output
+# `gain_raw` and `bias` -- no relevance-gate matrix -- so ~half CellV0.1's
+# per-connection parameter cost. Its hidden width is fitted to the SAME
+# Phase-1 parameter budget; the resulting (larger) cell count is reported,
+# not forced to match CellV0.1's.
+# ---------------------------------------------------------------------------
+
+
+def belief_v02_param_count(hidden_cells: int, in_features: int, out_features: int) -> int:
+    """Trainable parameters of a 2-`PrecisionGainLayer` `BeliefNetworkV02` +
+    linear readout.
+
+        layer1  = hidden_cells * (in_features + 2)      # V + gain_raw + bias
+        layer2  = hidden_cells * (hidden_cells + 2)
+        readout = hidden_cells * out_features + out_features
+    """
+    layer1 = hidden_cells * (in_features + 2)
+    layer2 = hidden_cells * (hidden_cells + 2)
+    readout = hidden_cells * out_features + out_features
+    return layer1 + layer2 + readout
+
+
+def belief_v02_hidden_cells_for_budget(
+    in_features: int, out_features: int, param_budget: int
+) -> int:
+    """Largest integer `hidden_cells` whose `BeliefNetworkV02` parameter
+    count stays within `param_budget` (same budget as CellV0.1 / Paper-A
+    task Sec 5)."""
+    hc = 1
+    while belief_v02_param_count(hc + 1, in_features, out_features) <= param_budget:
         hc += 1
     return hc
 
@@ -150,6 +197,40 @@ def build_cellv01(
             "params": n_params,
             "params_within_budget": bool(n_params <= param_budget),
             "aggregation": CELLV01_AGGREGATION,
+        },
+    )
+
+
+def build_cellv02(
+    in_features: int, out_features: int, param_budget: int
+) -> BuiltModel:
+    """CellV0.2 -- `BeliefNetworkV02` (two `PrecisionGainLayer`s + a
+    confidence-scaled linear readout), largest hidden-cell count within the
+    same Phase-1 parameter budget. Its lower per-connection cost buys more
+    hidden cells than CellV0.1 at the same budget -- reported, not
+    equalized (that is part of the architecture)."""
+    hidden_cells = belief_v02_hidden_cells_for_budget(in_features, out_features, param_budget)
+    model = BeliefNetworkV02(in_features, hidden_cells, out_features)
+    n_params = count_parameters(model)
+    return BuiltModel(
+        model=model,
+        family=CELLV02_FAMILY,
+        parameter_count=n_params,
+        hidden_size=hidden_cells,
+        sizing={
+            "hidden_cells": hidden_cells,
+            "param_budget": param_budget,
+            "params": n_params,
+            "params_within_budget": bool(n_params <= param_budget),
+            "params_formula": belief_v02_param_count(hidden_cells, in_features, out_features),
+            "cellv01_hidden_cells": belief_hidden_cells_for_budget(
+                in_features, out_features, param_budget
+            ),
+            "cellv01_params": belief_param_count(
+                belief_hidden_cells_for_budget(in_features, out_features, param_budget),
+                in_features,
+                out_features,
+            ),
         },
     )
 
@@ -238,6 +319,7 @@ def build_fixed_confidence(
 
 _BUILDERS = {
     "cellv0.1": build_cellv01,
+    "cellv0.2": build_cellv02,
     "mlp_matched": build_matched_mlp,
     "mlp_state_count": build_state_count_mlp,
     "cellv0.1_fixed_confidence": build_fixed_confidence,
@@ -330,4 +412,60 @@ def belief_diagnostics(
         out[f"diag_{tag}_max_e"] = max(r["max_e"] for r in rows)
         out[f"diag_{tag}_min_u"] = min(r["min_u"] for r in rows)
         out[f"diag_{tag}_max_u"] = max(r["max_u"] for r in rows)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# CellV0.2 internal diagnostics (Paper-A task Sec 9 analogue -- lightweight,
+# observational only, NOT an evaluation target and nothing is tuned on them).
+# Reports the effective precision `pi = e / (1 + e u)` and the relative gain
+# `2 pi / (pi + mean pi)` of each hidden layer's output belief state.
+# ---------------------------------------------------------------------------
+
+
+@torch.no_grad()
+def precision_gain_diagnostics(
+    model: nn.Module, x: torch.Tensor, chunk: int = EVAL_CHUNK
+) -> dict[str, float]:
+    """mean / std / min / max of effective precision, and mean / std of
+    relative gain, for `layer1` and `layer2` of a `BeliefNetworkV02`.
+    Chunked (running-moment accumulation) so it is memory-flat on the
+    MNIST-sized test splits."""
+    if not isinstance(model, BeliefNetworkV02):
+        raise TypeError(
+            f"precision-gain diagnostics not defined for {type(model).__name__}"
+        )
+    model.eval()
+    acc: dict[str, dict[str, float]] = {}
+    for i in range(0, x.shape[0], chunk):
+        b1, b2 = model.layer_states(x[i : i + chunk])
+        for tag, belief in (("layer1", b1), ("layer2", b2)):
+            pi = effective_precision(belief.evidence, belief.uncertainty)
+            rg = relative_gain(pi, model.eps)
+            slot = acc.setdefault(
+                tag,
+                {"n": 0.0, "pi_sum": 0.0, "pi_sq": 0.0, "pi_min": float("inf"),
+                 "pi_max": float("-inf"), "rg_sum": 0.0, "rg_sq": 0.0},
+            )
+            slot["n"] += pi.numel()
+            slot["pi_sum"] += float(pi.sum())
+            slot["pi_sq"] += float((pi * pi).sum())
+            slot["pi_min"] = min(slot["pi_min"], float(pi.min()))
+            slot["pi_max"] = max(slot["pi_max"], float(pi.max()))
+            slot["rg_sum"] += float(rg.sum())
+            slot["rg_sq"] += float((rg * rg).sum())
+
+    def _std(total: float, sq: float, n: float) -> float:
+        var = max(sq / n - (total / n) ** 2, 0.0)
+        return var**0.5
+
+    out: dict[str, float] = {}
+    for tag, s in acc.items():
+        n = s["n"]
+        out[f"diag_{tag}_precision_mean"] = s["pi_sum"] / n
+        out[f"diag_{tag}_precision_std"] = _std(s["pi_sum"], s["pi_sq"], n)
+        out[f"diag_{tag}_precision_min"] = s["pi_min"]
+        out[f"diag_{tag}_precision_max"] = s["pi_max"]
+        out[f"diag_{tag}_relative_gain_mean"] = s["rg_sum"] / n
+        out[f"diag_{tag}_relative_gain_std"] = _std(s["rg_sum"], s["rg_sq"], n)
     return out
