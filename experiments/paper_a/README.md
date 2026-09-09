@@ -77,3 +77,21 @@ loses, do not change the train fractions, do not add dataset-specific CellV0.1
 hyperparameters, do not rerun only bad CellV0.1 seeds, do not tune the
 evidence/uncertainty formulas, do not create CellV0.2 or pull in CellV1.x.
 Negative and null results stay in the report.
+
+## CellV0.2 follow-up (separate, later, user-commissioned)
+
+`docs/architecture_v0.md` §9 — **CellV0.2**, the Conservative Precision-Gain
+Cell — was specified in full by the user on 2026-09-09 as its own
+architecture line and run through this **identical frozen protocol** (same
+datasets, splits, fractions, seeds, AdamW settings, early stopping). This is
+not a modification of the screen above: CellV0.1 and the matched MLP are not
+re-run; their recorded `paper_a_phase1` records are reused for comparison.
+
+| File | Role |
+|---|---|
+| `run_phase1_v02.py` | The 42 CellV0.2 runs (experiment id `paper_a_phase1_cellv02`). |
+| `summarize_v02.py` | CellV0.2 tables + paired diffs vs the recorded arms → `phase1_v02_results.md`. |
+| `bench_cellv02_layer.py` | Isolated layer forward/backward timing vs CellV0.1 and `Linear+Tanh`. |
+
+CellV0.2 is deliberately **not** in `models.MODEL_FAMILIES`, so
+`run_phase1.py` never sweeps it into the original screen.

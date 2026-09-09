@@ -2215,3 +2215,99 @@ anti-cherry-picking line ("do not create CellV0.2") governed the *screening
 run itself* — this is a later, separately-commissioned architecture line
 run through the identical frozen protocol, reusing the recorded CellV0.1 /
 matched-MLP arms for comparison rather than re-running or altering them.
+
+## 2026-09-09 — CellV0.2: frozen Paper-A Phase-1 results
+
+**Context:** CellV0.2 implemented (previous entry). Run through the
+**identical frozen** Phase-1 protocol — same 7 datasets, same seeded
+splits, {25%, 100%}, seeds 0/1/2, AdamW (lr=1e-2, wd=0), best-val restore,
+~1500-step patience, 15000-step cap, CPU. 42 CellV0.2 runs (experiment id
+`paper_a_phase1_cellv02`). CellV0.1 and the parameter-matched MLP are **not**
+re-run — their recorded `paper_a_phase1` records are the comparison arms.
+Nothing tuned; equations frozen before the run. Full tables:
+`experiments/paper_a/phase1_v02_results.md`.
+
+**Sizing.** CellV0.2's hidden width fitted to the *same* per-dataset budget
+as CellV0.1. No gate matrix → ~1.4-1.9× the hidden cells (e.g. digits
+123 vs 82 @ ~24.8k params; MNIST 157 vs 85 @ ~149k). Reported, not
+equalized — the lower per-connection cost is part of the architecture.
+
+**A. Headline (mean of 3 seeds), CellV0.2 − recorded arm:**
+
+| dataset | vs matched MLP (25 / 100) | vs CellV0.1 (25 / 100) |
+|---|---|---|
+| breast_cancer | −0.006 / +0.000 | +0.003 / −0.003 |
+| wine | −0.009 / −0.009 | +0.009 / +0.000 |
+| digits | **+0.005 / +0.000** | **+0.057 / +0.040** |
+| diabetes | +0.213 / +0.038 | **−0.146 / −0.043** |
+| california_housing | +0.042 / +0.100 | +0.025 / +0.020 |
+| mnist (acc) | +0.017 / +0.017 | +0.010 / +0.003 |
+| fashion_mnist (acc) | +0.020 / +0.019 | +0.010 / +0.005 |
+
+Vs the parameter-matched MLP: CellV0.2 ahead by >0.01 in **8 of 14**
+(dataset, fraction) cells, behind by >0.01 in **0**, within ±0.01 in 6.
+
+- **Digits — CellV0.2 removes CellV0.1's only clean public-data loss.**
+  CellV0.1 was −0.053 / −0.040 behind the matched MLP on Digits (and also
+  behind the wider state-count MLP). CellV0.2 pulls to parity
+  (+0.005 / +0.000) — a +0.057 / +0.040 swing over CellV0.1. Most of this
+  is the extra hidden cells the cheaper parameterisation buys (123 vs 82).
+- **Images — the small CellV0.1 edge holds and slightly widens.** Every one
+  of the 12 MNIST/Fashion-MNIST seed comparisons vs the matched MLP is
+  positive (+0.017 to +0.020 on the mean); vs CellV0.1, +0.003 to +0.010.
+- **California — CellV0.2 beats both** CellV0.1 (+0.02-0.03) and the MLP
+  (+0.04-0.10).
+- **Diabetes — CellV0.2 is worse than CellV0.1** (−0.146 at 25%, −0.043 at
+  100%), the one clear regression. It still sits above the matched MLP, but
+  the Phase-1 caveat stands: the matched MLP is unstable on the small
+  regression sets at lr=1e-2 (Diabetes-25% MLP R²=0.017±0.302), so
+  "CellV0.2 > MLP on Diabetes/California" is not a clean win. Against the
+  stable CellV0.1 baseline, CellV0.2 loses on Diabetes and wins on
+  California.
+- Breast Cancer / Wine: within ±0.01 of both arms.
+
+**B. Cost.** CellV0.2 converges in **fewer** best-validation steps than
+CellV0.1 on every dataset except Breast Cancer, and trains **3-48× faster**
+in wall-clock (Digits ~16-19×, MNIST ~28-31×, Fashion-MNIST ~42-48×) — its
+three GEMMs vs CellV0.1's `(batch, out_cells, in_cells)` broadcast fusion.
+The whole 42-run sweep took ~6 min; the CellV0.1 Phase-1 image runs alone
+took hours. No divergence, no NaNs, no step-cap hits.
+
+**C. The confidence mechanism looks close to inert — same as Phase-1's
+finding for CellV0.1.** Relative-gain diagnostics
+`2π / (π + mean π)` sit at **mean ≈ 0.99-1.00** (per-cell std 0.01-0.09) in
+every trained network, on every dataset — i.e. the precision-based
+modulation of each source message is operating very close to the identity.
+Layer 1's inherited precision `e` is moreover *exactly* 1 by construction
+(all input features start at precision 1 and `e_out` is a convex
+combination), so layer 1 only ever varies `u`. Effective precision by layer:
+L1 mean 0.43-0.72, L2 mean 0.33-0.67 (the `u`-driven part is real), but the
+gain it produces is near-1. So — as the Phase-1 fixed-confidence ablation
+concluded for CellV0.1 — CellV0.2's advantage is carried by its
+**content-pathway reparameterisation** (one normalised signed matrix `V`
+plus a separate positive gain; exact `tanh(F.linear)` reduction at init;
+~1.5× more hidden cells per parameter), **not** by propagating
+evidence/uncertainty. No CellV0.2 fixed-confidence ablation was run (not in
+scope; the relative-gain diagnostic is the observational proxy).
+
+**D. Numeric-range flag.** Digits (all 3 seeds, both fractions) has a single
+test-example × cell with layer-1 effective precision ~1e-11 (a large local
+disagreement `u`) — the CellV0.2 analogue of the Digits layer-1 max-`u`
+spike noted for CellV0.1 in Phase-1. All values finite; no NaN, no
+divergence, no protocol impact.
+
+**Verdict — CellV0.2 is a clear content-pathway improvement over CellV0.1 on
+this frozen protocol, at a fraction of the compute.** It removes CellV0.1's
+one clean public-data loss (Digits), holds the every-seed image edge, adds a
+California edge, converges faster, and runs 3-48× faster — with one
+regression (Diabetes vs CellV0.1) and the unchanged regression-baseline
+caveat. But the mechanism the V0 line is *about* — recursively propagating
+evidence/uncertainty — is, by the relative-gain diagnostics, close to inert
+in the trained networks, exactly as Phase-1 found for CellV0.1. Reported as
+evidence: no redesign, no calibration/sparsity losses, no learned gain
+temperature, no new datasets, no CellV0.2.1.
+
+**Why:** identical frozen protocol; CellV0.2 is the user's own full
+specification with an explicit implement-and-evaluate instruction; CellV0.1
+and its recorded results are untouched; the comparison reuses the recorded
+arms rather than re-running them; nothing was tuned after seeing results.

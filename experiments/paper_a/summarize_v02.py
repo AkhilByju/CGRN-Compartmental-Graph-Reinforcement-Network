@@ -120,6 +120,8 @@ def section_signal(cells: dict, present: list[str]) -> list[str]:
                 read = "win (both fractions)"
             elif all(x == "loss" for x in reads):
                 read = "loss (both fractions)"
+            elif all(x == "tie" for x in reads):
+                read = "tie"
             elif "win" in reads and "loss" not in reads:
                 read = "win (one fraction)"
             elif "loss" in reads and "win" not in reads:
@@ -170,6 +172,30 @@ def table_main(cells: dict, present: list[str]) -> list[str]:
                 f"{runs[0]['params']:,} | {hl}: {_fmt(hl_m, hl_s)} | {sec} | "
                 f"{bv_m:.0f} ± {bv_s:.0f} | {ts_m:.0f} | {_fmt(wc_m, wc_s, 1)} | "
                 f"{tps_m*1e3:.2f} |"
+            )
+    out.append("")
+    return out
+
+
+def table_efficiency(cells: dict, present: list[str]) -> list[str]:
+    out = ["## Data-efficiency — headline at 25% → 100% training data", ""]
+    out.append("| Dataset | Model | 25% | 100% | Δ (100% − 25%) |")
+    out.append("|---|---|---|---|---|")
+    for ds in present:
+        for fam, name in (
+            ("cellv0.2", "CellV0.2"),
+            ("cellv0.1", "CellV0.1 (recorded)"),
+            ("mlp_matched", "MLP matched (recorded)"),
+        ):
+            r25 = _cell(cells, ds, 0.25, fam)
+            r100 = _cell(cells, ds, 1.0, fam)
+            if not (r25 and r100):
+                continue
+            m25, s25 = _agg([_headline(r) for r in r25])
+            m100, s100 = _agg([_headline(r) for r in r100])
+            out.append(
+                f"| {ds} | {name} | {_fmt(m25, s25)} | {_fmt(m100, s100)} | "
+                f"{m100 - m25:+.4f} |"
             )
     out.append("")
     return out
@@ -311,6 +337,29 @@ def table_failures(cells: dict, present: list[str]) -> list[str]:
     else:
         out.append("**Step-cap hits:** none.")
     out.append("")
+
+    tiny = []
+    for r in v02:
+        d = r["diagnostics"]
+        for layer in ("layer1", "layer2"):
+            lo = d.get(f"diag_{layer}_precision_min")
+            if lo is not None and lo < 1e-6:
+                tiny.append(
+                    f"{r['dataset']} {int(r['train_fraction']*100)}% "
+                    f"seed{r['seed']} {layer} (min π = {lo:.1e})"
+                )
+    if tiny:
+        out.append(
+            "**Numeric-range flag** (a single test example × cell with effective "
+            "precision `< 1e-6` — large local disagreement `u`; all values finite, "
+            "no NaN/divergence, no protocol impact):"
+        )
+        out.append("")
+        for t in tiny:
+            out.append(f"- {t}")
+    else:
+        out.append("**Numeric-range flag:** none (min effective precision ≥ 1e-6).")
+    out.append("")
     return out
 
 
@@ -334,6 +383,7 @@ def build_report(raw_dir: Path) -> str:
     lines += table_main(cells, present)
     lines += table_paired(cells, present, "mlp_matched", "the parameter-matched MLP")
     lines += table_paired(cells, present, "cellv0.1", "CellV0.1 (recorded)")
+    lines += table_efficiency(cells, present)
     lines += table_params(cells, present)
     lines += section_diagnostics(cells, present)
     lines += table_failures(cells, present)
