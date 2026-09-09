@@ -96,6 +96,7 @@ def _load_records(raw_dir: Path, experiment_id: str) -> list[dict]:
             "mae": tm.get("mae"),
             "sizing": extra.get("sizing", {}),
             "diagnostics": extra.get("diagnostics", {}),
+            "diagnostics_init": extra.get("diagnostics_init", {}),
         }
     return list(latest.values())
 

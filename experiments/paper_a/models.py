@@ -35,6 +35,7 @@ from torch import nn  # noqa: E402
 from src.evaluation.efficiency import count_parameters  # noqa: E402
 from src.models.architecture_v0.belief_network import BeliefNetwork  # noqa: E402
 from src.models.architecture_v0.cell import BeliefCell  # noqa: E402
+from src.models.architecture_v0.conflict_normalized import BeliefNetworkV03  # noqa: E402
 from src.models.architecture_v0.integration import BeliefLayer  # noqa: E402
 from src.models.architecture_v0.precision_gain import (  # noqa: E402
     BeliefNetworkV02,
@@ -52,6 +53,7 @@ STATE_COUNT_MULTIPLIER = 3  # (mu, e, u) -- three runtime scalar states per cell
 # `run_phase1.py` never sweeps it into the original screen.
 MODEL_FAMILIES: tuple[str, ...] = ("cellv0.1", "mlp_matched", "mlp_state_count")
 CELLV02_FAMILY = "cellv0.2"
+CELLV03_FAMILY = "cellv0.3"
 
 _MLP_SEARCH_RANGE = range(1, 4000)
 
@@ -85,7 +87,7 @@ def belief_hidden_cells_for_budget(
 # ---------------------------------------------------------------------------
 # CellV0.2 sizing -- the Conservative Precision-Gain Cell
 # (`src/models/architecture_v0/precision_gain.py`, docs/architecture_v0.md
-# Sec 10). One signed connection matrix `V` [out, in] plus a per-output
+# Sec 9). One signed connection matrix `V` [out, in] plus a per-output
 # `gain_raw` and `bias` -- no relevance-gate matrix -- so ~half CellV0.1's
 # per-connection parameter cost. Its hidden width is fitted to the SAME
 # Phase-1 parameter budget; the resulting (larger) cell count is reported,
@@ -117,6 +119,32 @@ def belief_v02_hidden_cells_for_budget(
     while belief_v02_param_count(hc + 1, in_features, out_features) <= param_budget:
         hc += 1
     return hc
+
+
+# ---------------------------------------------------------------------------
+# CellV0.3 sizing -- the Conflict-Normalized Precision Cell
+# (`src/models/architecture_v0/conflict_normalized.py`, docs/architecture_v0.md
+# Sec 10). CellV0.3 has the *exact same* parameterization as CellV0.2 -- one
+# signed `V` [out, in] plus a per-output `gain_raw`/`bias`, no relevance-gate
+# matrix -- so its parameter count and its budget-fitted hidden width are
+# identical to CellV0.2's. Reported alongside CellV0.1's for comparison, not
+# equalized.
+# ---------------------------------------------------------------------------
+
+
+def belief_v03_param_count(hidden_cells: int, in_features: int, out_features: int) -> int:
+    """Trainable parameters of a 2-`ConflictNormalizedLayer` `BeliefNetworkV03`
+    + linear readout -- identical to CellV0.2's `out*(in+2)` per hidden layer
+    plus `hidden*out + out` for the readout."""
+    return belief_v02_param_count(hidden_cells, in_features, out_features)
+
+
+def belief_v03_hidden_cells_for_budget(
+    in_features: int, out_features: int, param_budget: int
+) -> int:
+    """Largest integer `hidden_cells` whose `BeliefNetworkV03` parameter count
+    stays within `param_budget` -- same as CellV0.2 at every budget."""
+    return belief_v02_hidden_cells_for_budget(in_features, out_features, param_budget)
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +263,37 @@ def build_cellv02(
     )
 
 
+def build_cellv03(
+    in_features: int, out_features: int, param_budget: int
+) -> BuiltModel:
+    """CellV0.3 -- `BeliefNetworkV03` (two `ConflictNormalizedLayer`s + a
+    plain linear readout on `final_mu`), largest hidden-cell count within the
+    same Phase-1 parameter budget. Its parameterization is identical to
+    CellV0.2's, so it buys the same (larger-than-CellV0.1) hidden-cell count
+    -- reported, not equalized (docs/architecture_v0.md Sec 10)."""
+    hidden_cells = belief_v03_hidden_cells_for_budget(in_features, out_features, param_budget)
+    model = BeliefNetworkV03(in_features, hidden_cells, out_features)
+    n_params = count_parameters(model)
+    cellv01_hc = belief_hidden_cells_for_budget(in_features, out_features, param_budget)
+    cellv02_hc = belief_v02_hidden_cells_for_budget(in_features, out_features, param_budget)
+    return BuiltModel(
+        model=model,
+        family=CELLV03_FAMILY,
+        parameter_count=n_params,
+        hidden_size=hidden_cells,
+        sizing={
+            "hidden_cells": hidden_cells,
+            "param_budget": param_budget,
+            "params": n_params,
+            "params_within_budget": bool(n_params <= param_budget),
+            "params_formula": belief_v03_param_count(hidden_cells, in_features, out_features),
+            "cellv01_hidden_cells": cellv01_hc,
+            "cellv01_params": belief_param_count(cellv01_hc, in_features, out_features),
+            "cellv02_hidden_cells": cellv02_hc,
+        },
+    )
+
+
 def build_matched_mlp(
     in_features: int, out_features: int, param_budget: int
 ) -> BuiltModel:
@@ -320,6 +379,7 @@ def build_fixed_confidence(
 _BUILDERS = {
     "cellv0.1": build_cellv01,
     "cellv0.2": build_cellv02,
+    "cellv0.3": build_cellv03,
     "mlp_matched": build_matched_mlp,
     "mlp_state_count": build_state_count_mlp,
     "cellv0.1_fixed_confidence": build_fixed_confidence,
@@ -468,4 +528,81 @@ def precision_gain_diagnostics(
         out[f"diag_{tag}_precision_max"] = s["pi_max"]
         out[f"diag_{tag}_relative_gain_mean"] = s["rg_sum"] / n
         out[f"diag_{tag}_relative_gain_std"] = _std(s["rg_sum"], s["rg_sq"], n)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# CellV0.3 internal diagnostics (Paper-A task Sec 9 analogue -- lightweight,
+# observational only, NOT an evaluation target and nothing is tuned on them).
+# Reports mean/std/min/max of e_out, u_out, effective precision
+# `pi = e/(1+e u)` and `sqrt(pi)` per hidden layer, plus the mean absolute
+# consensus and the coefficient of variation of pi. The CoV is the headline
+# question: does CellV0.3 learn an example/cell-dependent confidence, or does
+# precision again collapse to an effectively constant value?
+# ---------------------------------------------------------------------------
+
+def _running_stats_init() -> dict[str, float]:
+    return {"n": 0.0, "sum": 0.0, "sq": 0.0, "min": float("inf"), "max": float("-inf")}
+
+
+def _running_stats_update(slot: dict[str, float], t: torch.Tensor) -> None:
+    slot["n"] += t.numel()
+    slot["sum"] += float(t.sum())
+    slot["sq"] += float((t * t).sum())
+    slot["min"] = min(slot["min"], float(t.min()))
+    slot["max"] = max(slot["max"], float(t.max()))
+
+
+def _running_stats_finalize(slot: dict[str, float]) -> tuple[float, float, float, float]:
+    n = slot["n"]
+    mean = slot["sum"] / n
+    var = max(slot["sq"] / n - mean * mean, 0.0)
+    return mean, var**0.5, slot["min"], slot["max"]
+
+
+@torch.no_grad()
+def conflict_normalized_diagnostics(
+    model: nn.Module, x: torch.Tensor, chunk: int = EVAL_CHUNK
+) -> dict[str, float]:
+    """CellV0.3 per-layer belief-state diagnostics on `x`, chunked
+    (running-moment accumulation) so it is memory-flat on the MNIST-sized
+    test splits. Observational only -- never an evaluation target."""
+    if not isinstance(model, BeliefNetworkV03):
+        raise TypeError(
+            f"conflict-normalized diagnostics not defined for {type(model).__name__}"
+        )
+    model.eval()
+    acc: dict[tuple[str, str], dict[str, float]] = {}
+    consensus_acc: dict[str, list[float]] = {}  # tag -> [abs_sum, n]
+    for i in range(0, x.shape[0], chunk):
+        states = model.layer_states_verbose(x[i : i + chunk])
+        for tag, (belief, consensus) in zip(("layer1", "layer2"), states):
+            pi = effective_precision(belief.evidence, belief.uncertainty)
+            values = {
+                "e": belief.evidence,
+                "u": belief.uncertainty,
+                "precision": pi,
+                "sqrt_precision": pi.clamp_min(0.0).sqrt(),
+            }
+            for q, t in values.items():
+                _running_stats_update(
+                    acc.setdefault((tag, q), _running_stats_init()), t
+                )
+            c = consensus_acc.setdefault(tag, [0.0, 0.0])
+            c[0] += float(consensus.abs().sum())
+            c[1] += consensus.numel()
+
+    out: dict[str, float] = {}
+    for (tag, q), slot in acc.items():
+        mean, std, lo, hi = _running_stats_finalize(slot)
+        out[f"diag_{tag}_{q}_mean"] = mean
+        out[f"diag_{tag}_{q}_std"] = std
+        out[f"diag_{tag}_{q}_min"] = lo
+        out[f"diag_{tag}_{q}_max"] = hi
+    for tag, (abs_sum, n) in consensus_acc.items():
+        out[f"diag_{tag}_abs_consensus_mean"] = abs_sum / n
+    for tag in ("layer1", "layer2"):
+        m = out[f"diag_{tag}_precision_mean"]
+        sd = out[f"diag_{tag}_precision_std"]
+        out[f"diag_{tag}_precision_cv"] = sd / (m + 1e-8)
     return out

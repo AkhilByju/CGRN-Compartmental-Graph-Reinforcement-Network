@@ -24,10 +24,12 @@ from experiments.paper_a.datasets import PreparedDataset, prepare_dataset  # noq
 from experiments.paper_a.models import (  # noqa: E402
     BELIEF_FAMILIES,
     CELLV02_FAMILY,
+    CELLV03_FAMILY,
     MODEL_FAMILIES,
     batched_forward,
     belief_diagnostics,
     build_model,
+    conflict_normalized_diagnostics,
     precision_gain_diagnostics,
 )
 from experiments.paper_a.training import (  # noqa: E402
@@ -49,6 +51,7 @@ ALL_FAMILIES: tuple[str, ...] = (
     *MODEL_FAMILIES,
     "cellv0.1_fixed_confidence",
     CELLV02_FAMILY,
+    CELLV03_FAMILY,
 )
 EXPERIMENT_ID = "paper_a_phase1"
 
@@ -139,6 +142,17 @@ def run_one(
     model = built.model
     param_count = count_parameters(model)
 
+    # CellV0.3 only: snapshot the untrained belief-state diagnostics so the
+    # report can compare init vs best-checkpoint precision behaviour (Sec 19).
+    # Deterministic no-grad forwards -- `train_model` re-seeds and re-`.to()`s,
+    # so this cannot perturb the trained result.
+    diagnostics_init: dict[str, float] = {}
+    if family == CELLV03_FAMILY:
+        model.to(device)
+        diagnostics_init = conflict_normalized_diagnostics(
+            model, prepared.x_test.to(device)
+        )
+
     outcome = train_model(
         model,
         prepared,
@@ -160,6 +174,8 @@ def run_one(
         diagnostics = belief_diagnostics(model, prepared.x_test.to(device))
     elif family == CELLV02_FAMILY:
         diagnostics = precision_gain_diagnostics(model, prepared.x_test.to(device))
+    elif family == CELLV03_FAMILY:
+        diagnostics = conflict_normalized_diagnostics(model, prepared.x_test.to(device))
 
     headline = headline_metric_name(prepared.task_type)
     efficiency = {
@@ -194,6 +210,7 @@ def run_one(
         "dataset_meta": prepared.meta,
         "efficiency": efficiency,
         "diagnostics": diagnostics,
+        "diagnostics_init": diagnostics_init,
         "diverged": outcome.diverged,
         "cap_hit": outcome.cap_hit,
     }
@@ -258,6 +275,7 @@ def run_one(
         **{f"test_{k}": v for k, v in test_metrics.items()},
         **{f"eff_{k}": v for k, v in efficiency.items()},
         **diagnostics,
+        "diagnostics_init": diagnostics_init,
         "sizing": built.sizing,
         "git_commit": get_git_commit(),
     }
