@@ -39,7 +39,11 @@ from experiments.paper_a.harness import run_one  # noqa: E402
 
 ABLATION_EXPERIMENT_ID = "paper_a_phase1_fixed_confidence"
 ABLATION_DATASETS: tuple[str, ...] = ("digits", "diabetes", "fashion_mnist")
-ABLATION_FAMILIES: tuple[str, ...] = ("cellv0.1", "cellv0.1_fixed_confidence")
+# Only the ablation model is run here; its CellV0.1 baseline is the Phase-1
+# grid's own `cellv0.1` record for the same (dataset, 25%, seed) -- byte-for-
+# byte identical training conditions, since the harness is deterministic.
+# `--with-baseline` re-runs `cellv0.1` too, for standalone use.
+ABLATION_FAMILIES: tuple[str, ...] = ("cellv0.1_fixed_confidence",)
 ABLATION_FRACTION = 0.25
 ABLATION_SEEDS: tuple[int, ...] = (0, 1, 2)
 RESULTS_RAW = _HERE / "results" / "raw"
@@ -50,6 +54,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--datasets", nargs="+", default=list(ABLATION_DATASETS))
     parser.add_argument("--seeds", type=int, nargs="+", default=list(ABLATION_SEEDS))
+    parser.add_argument(
+        "--with-baseline", action="store_true",
+        help="also (re-)run the cellv0.1 baseline arm instead of pairing "
+        "against the Phase-1 grid's records",
+    )
     parser.add_argument("--device", default=None)
     parser.add_argument("--threads", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=15_000)
@@ -65,10 +74,13 @@ def main() -> None:
     Path(args.results_dir).mkdir(parents=True, exist_ok=True)
     Path(args.summary_out).parent.mkdir(parents=True, exist_ok=True)
 
+    families = list(ABLATION_FAMILIES)
+    if args.with_baseline:
+        families = ["cellv0.1", *families]
     grid = [
         (ds, fam, seed)
         for ds in args.datasets
-        for fam in ABLATION_FAMILIES
+        for fam in families
         for seed in args.seeds
     ]
     print(f"Running {len(grid)} fixed-confidence ablation runs...")

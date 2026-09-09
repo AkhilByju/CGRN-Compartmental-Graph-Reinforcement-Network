@@ -259,12 +259,15 @@ def table_d_state_count(rows: list[dict], datasets: list[str]) -> list[str]:
     return out
 
 
-def table_e_fixed_confidence(ablation_rows: list[dict]) -> list[str]:
-    cells = _by_cell(ablation_rows)
+def table_e_fixed_confidence(ablation_rows: list[dict], main_rows: list[dict]) -> list[str]:
+    # The CellV0.1 baseline arm is the Phase-1 grid's own record for the
+    # same (dataset, 25%, seed) unless run_ablation was given --with-baseline.
+    cells = _by_cell(ablation_rows + main_rows)
     out = ["## E. Fixed-confidence ablation — CellV0.1 vs e=u=1 control", ""]
     out.append(
         f"Datasets: {', '.join(ABLATION_DATASETS)} · train fraction "
-        f"{int(ABLATION_FRACTION*100)}% · seeds 0,1,2."
+        f"{int(ABLATION_FRACTION*100)}% · seeds 0,1,2. CellV0.1 arm = the "
+        "Phase-1 grid record (identical deterministic conditions)."
     )
     out.append("")
     out.append(
@@ -467,7 +470,7 @@ def build_report(raw_dir: Path, dup_path: Path) -> str:
         lines += table_d_state_count(rows, present)
         lines += section_diagnostics(rows, present)
     if ablation_rows:
-        lines += table_e_fixed_confidence(ablation_rows)
+        lines += table_e_fixed_confidence(ablation_rows, rows)
     lines += table_f_duplication(dup_path)
     lines += table_g_failures(rows, ablation_rows, present)
     return "\n".join(lines) + "\n"
