@@ -1,0 +1,296 @@
+"""The three Paper-A model families, plus the fixed-confidence ablation.
+
+A. **CellV0.1** -- the frozen `BeliefNetwork` with `scale_stable_precision`
+   aggregation (`src/models/architecture_v0/`). Not modified here in any way;
+   this module only *sizes and constructs* it.
+B. **Parameter-matched MLP** -- `input -> Linear -> SiLU -> Linear` whose
+   hidden width is chosen so its trainable-parameter count lands within 2% of
+   CellV0.1's actual count (Paper-A task Sec 4B).
+C. **State-count MLP control** -- the same 1-hidden-layer SiLU MLP with hidden
+   width `~= 3 * CellV0.1_hidden_cells` (CellV0.1 carries three runtime scalar
+   states per cell). Deliberately *not* parameter-matched; its larger
+   parameter count is reported, not hidden (Paper-A task Sec 4C).
+
+Ablation. **CellV0.1-fixed-confidence** -- CellV0.1's exact content pathway
+(same `BeliefLayer` parameters, same `content_weight`/`relevance_logit`/`bias`,
+same count) but the evidence/uncertainty of every belief *entering* a fusion
+is overwritten with ones, so the dynamically propagated `e`/`u` state cannot
+influence anything downstream (Paper-A task Sec 11). Reuses the frozen
+`BeliefLayer` unchanged.
+"""
+
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import torch  # noqa: E402
+from torch import nn  # noqa: E402
+
+from src.evaluation.efficiency import count_parameters  # noqa: E402
+from src.models.architecture_v0.belief_network import BeliefNetwork  # noqa: E402
+from src.models.architecture_v0.cell import BeliefCell  # noqa: E402
+from src.models.architecture_v0.integration import BeliefLayer  # noqa: E402
+from src.models.baselines.mlp import MLPBaseline, match_hidden_dim  # noqa: E402
+
+CELLV01_AGGREGATION = "scale_stable_precision"
+STATE_COUNT_MULTIPLIER = 3  # (mu, e, u) -- three runtime scalar states per cell
+
+MODEL_FAMILIES: tuple[str, ...] = ("cellv0.1", "mlp_matched", "mlp_state_count")
+
+_MLP_SEARCH_RANGE = range(1, 4000)
+
+
+# ---------------------------------------------------------------------------
+# CellV0.1 sizing (closed form -- identical for every aggregation method,
+# per docs/architecture_v0.md Sec 7 item 6)
+# ---------------------------------------------------------------------------
+
+
+def belief_param_count(hidden_cells: int, in_features: int, out_features: int) -> int:
+    """Trainable parameters of a 2-`BeliefLayer` `BeliefNetwork` + linear
+    readout: `layer1 + layer2 + readout`."""
+    layer1 = hidden_cells * (2 * in_features + 1)
+    layer2 = hidden_cells * (2 * hidden_cells + 1)
+    readout = hidden_cells * out_features + out_features
+    return layer1 + layer2 + readout
+
+
+def belief_hidden_cells_for_budget(
+    in_features: int, out_features: int, param_budget: int
+) -> int:
+    """Largest integer `hidden_cells` whose `BeliefNetwork` parameter count
+    stays within `param_budget` (Paper-A task Sec 5)."""
+    hc = 1
+    while belief_param_count(hc + 1, in_features, out_features) <= param_budget:
+        hc += 1
+    return hc
+
+
+# ---------------------------------------------------------------------------
+# Fixed-confidence ablation model
+# ---------------------------------------------------------------------------
+
+
+def _ones_confidence(belief: BeliefCell) -> BeliefCell:
+    ones = torch.ones_like(belief.mu)
+    return BeliefCell(mu=belief.mu, evidence=ones, uncertainty=ones)
+
+
+class FixedConfidenceBeliefNetwork(nn.Module):
+    """CellV0.1's architecture and parameters exactly, but the belief state
+    entering every `BeliefLayer` has `e = u = 1` forced (the raw input
+    already does; this additionally resets layer 1's *output* confidence
+    before it reaches layer 2). Isolates whether the propagated evidence/
+    uncertainty state contributes beyond the content pathway.
+
+    Same module structure, same parameter count, same `content_weight` /
+    `relevance_logit` / `bias` shapes as `BeliefNetwork` -- only the belief
+    flowing between layers is intercepted.
+    """
+
+    def __init__(self, in_features: int, hidden_cells: int, out_features: int) -> None:
+        super().__init__()
+        self.layer1 = BeliefLayer(in_features, hidden_cells, aggregation=CELLV01_AGGREGATION)
+        self.layer2 = BeliefLayer(hidden_cells, hidden_cells, aggregation=CELLV01_AGGREGATION)
+        self.readout = nn.Linear(hidden_cells, out_features)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        belief = _ones_confidence(BeliefCell.from_observed_features(x))
+        belief = _ones_confidence(self.layer1(belief))
+        belief = self.layer2(belief)
+        return self.readout(belief.mu)
+
+    def forward_with_beliefs(self, x: torch.Tensor) -> tuple[torch.Tensor, BeliefCell]:
+        belief = _ones_confidence(BeliefCell.from_observed_features(x))
+        b1 = _ones_confidence(self.layer1(belief))
+        b2 = self.layer2(b1)
+        return self.readout(b2.mu), b2
+
+
+# ---------------------------------------------------------------------------
+# Builders
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BuiltModel:
+    model: nn.Module
+    family: str
+    parameter_count: int
+    hidden_size: int  # hidden_cells for belief nets, hidden_dim for MLPs
+    sizing: dict[str, float | int | str]
+
+
+def _cellv01_hidden_cells(in_features: int, out_features: int, param_budget: int) -> int:
+    return belief_hidden_cells_for_budget(in_features, out_features, param_budget)
+
+
+def build_cellv01(
+    in_features: int, out_features: int, param_budget: int
+) -> BuiltModel:
+    hidden_cells = _cellv01_hidden_cells(in_features, out_features, param_budget)
+    model = BeliefNetwork(
+        in_features, hidden_cells, out_features, aggregation=CELLV01_AGGREGATION
+    )
+    n_params = count_parameters(model)
+    return BuiltModel(
+        model=model,
+        family="cellv0.1",
+        parameter_count=n_params,
+        hidden_size=hidden_cells,
+        sizing={
+            "hidden_cells": hidden_cells,
+            "param_budget": param_budget,
+            "params": n_params,
+            "params_within_budget": bool(n_params <= param_budget),
+            "aggregation": CELLV01_AGGREGATION,
+        },
+    )
+
+
+def build_matched_mlp(
+    in_features: int, out_features: int, param_budget: int
+) -> BuiltModel:
+    """Model B: 1-hidden-layer SiLU MLP matched to CellV0.1's *actual*
+    parameter count (Paper-A task Sec 5: "match model B to the actual
+    resulting CellV0.1 parameter count")."""
+    hidden_cells = _cellv01_hidden_cells(in_features, out_features, param_budget)
+    target = belief_param_count(hidden_cells, in_features, out_features)
+
+    hidden_dim = match_hidden_dim(
+        target, in_features, out_features, num_hidden_layers=1, search_range=_MLP_SEARCH_RANGE
+    )
+    model = MLPBaseline(
+        in_features, hidden_dim, out_features, num_hidden_layers=1, activation=nn.SiLU
+    )
+    n_params = count_parameters(model)
+    rel_diff = abs(n_params - target) / target
+    return BuiltModel(
+        model=model,
+        family="mlp_matched",
+        parameter_count=n_params,
+        hidden_size=hidden_dim,
+        sizing={
+            "hidden_dim": hidden_dim,
+            "target_params": target,
+            "params": n_params,
+            "param_diff": n_params - target,
+            "param_rel_diff": rel_diff,
+            "param_match_within_2pct": bool(rel_diff <= 0.02),
+        },
+    )
+
+
+def build_state_count_mlp(
+    in_features: int, out_features: int, param_budget: int
+) -> BuiltModel:
+    """Model C: 1-hidden-layer SiLU MLP with hidden width
+    `3 * CellV0.1_hidden_cells`. Not parameter-matched; the (larger)
+    parameter count is reported explicitly."""
+    hidden_cells = _cellv01_hidden_cells(in_features, out_features, param_budget)
+    cell_params = belief_param_count(hidden_cells, in_features, out_features)
+    hidden_dim = STATE_COUNT_MULTIPLIER * hidden_cells
+    model = MLPBaseline(
+        in_features, hidden_dim, out_features, num_hidden_layers=1, activation=nn.SiLU
+    )
+    n_params = count_parameters(model)
+    return BuiltModel(
+        model=model,
+        family="mlp_state_count",
+        parameter_count=n_params,
+        hidden_size=hidden_dim,
+        sizing={
+            "hidden_dim": hidden_dim,
+            "cellv01_hidden_cells": hidden_cells,
+            "state_count_multiplier": STATE_COUNT_MULTIPLIER,
+            "params": n_params,
+            "cellv01_params": cell_params,
+            "params_vs_cellv01_ratio": n_params / cell_params,
+            "params_more_than_cellv01": n_params - cell_params,
+        },
+    )
+
+
+def build_fixed_confidence(
+    in_features: int, out_features: int, param_budget: int
+) -> BuiltModel:
+    hidden_cells = _cellv01_hidden_cells(in_features, out_features, param_budget)
+    model = FixedConfidenceBeliefNetwork(in_features, hidden_cells, out_features)
+    n_params = count_parameters(model)
+    return BuiltModel(
+        model=model,
+        family="cellv0.1_fixed_confidence",
+        parameter_count=n_params,
+        hidden_size=hidden_cells,
+        sizing={
+            "hidden_cells": hidden_cells,
+            "params": n_params,
+            "cellv01_params": belief_param_count(hidden_cells, in_features, out_features),
+        },
+    )
+
+
+_BUILDERS = {
+    "cellv0.1": build_cellv01,
+    "mlp_matched": build_matched_mlp,
+    "mlp_state_count": build_state_count_mlp,
+    "cellv0.1_fixed_confidence": build_fixed_confidence,
+}
+
+
+def build_model(family: str, in_features: int, out_features: int, param_budget: int) -> BuiltModel:
+    if family not in _BUILDERS:
+        raise ValueError(f"Unknown model family '{family}'. Expected one of {tuple(_BUILDERS)}.")
+    return _BUILDERS[family](in_features, out_features, param_budget)
+
+
+# ---------------------------------------------------------------------------
+# CellV0.1 internal diagnostics (Paper-A task Sec 9 -- lightweight only, not
+# an evaluation target)
+# ---------------------------------------------------------------------------
+
+BELIEF_FAMILIES: frozenset[str] = frozenset({"cellv0.1", "cellv0.1_fixed_confidence"})
+
+
+def _forward_layers(model: nn.Module, x: torch.Tensor) -> tuple[BeliefCell, BeliefCell]:
+    """Returns `(belief_after_layer1, belief_after_layer2)` for either a
+    `BeliefNetwork` or a `FixedConfidenceBeliefNetwork`, mirroring each
+    one's own `forward`."""
+    if isinstance(model, FixedConfidenceBeliefNetwork):
+        b0 = _ones_confidence(BeliefCell.from_observed_features(x))
+        b1 = model.layer1(b0)
+        b2 = model.layer2(_ones_confidence(b1))
+        return b1, b2
+    if isinstance(model, BeliefNetwork):
+        b0 = BeliefCell.from_observed_features(x)
+        b1 = model.layer1(b0)
+        b2 = model.layer2(b1)
+        return b1, b2
+    raise TypeError(f"belief diagnostics not defined for {type(model).__name__}")
+
+
+@torch.no_grad()
+def belief_diagnostics(model: nn.Module, x: torch.Tensor, eps: float = 1e-8) -> dict[str, float]:
+    """Mean `e`, mean `u`, mean `e / (u^2 + eps)`, and min/max of `e` and `u`
+    for each `BeliefLayer` -- numerical-stability diagnostics, per the
+    Paper-A task's explicit instruction not to treat these as headline
+    metrics."""
+    model.eval()
+    b1, b2 = _forward_layers(model, x)
+    out: dict[str, float] = {}
+    for tag, b in (("layer1", b1), ("layer2", b2)):
+        e, u = b.evidence, b.uncertainty
+        out[f"diag_{tag}_mean_e"] = float(e.mean())
+        out[f"diag_{tag}_mean_u"] = float(u.mean())
+        out[f"diag_{tag}_mean_e_over_u2"] = float((e / (u**2 + eps)).mean())
+        out[f"diag_{tag}_min_e"] = float(e.min())
+        out[f"diag_{tag}_max_e"] = float(e.max())
+        out[f"diag_{tag}_min_u"] = float(u.min())
+        out[f"diag_{tag}_max_u"] = float(u.max())
+    return out
