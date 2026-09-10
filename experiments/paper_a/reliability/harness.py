@@ -36,8 +36,8 @@ from experiments.paper_a.reliability.interventions import (  # noqa: E402
     run_all_regimes,
 )
 from experiments.paper_a.reliability.models import (  # noqa: E402
+    ALL_FAMILIES,
     CELLV03,
-    MODEL_FAMILIES,
     ReliabilityCellV03,
     belief_diagnostics,
     build_model,
@@ -94,7 +94,7 @@ def run_one(
 ) -> dict:
     if corruption_family not in CORRUPTION_FAMILIES:
         raise ValueError(f"unknown corruption family {corruption_family!r}")
-    if family not in MODEL_FAMILIES:
+    if family not in ALL_FAMILIES:
         raise ValueError(f"unknown model family {family!r}")
 
     device = device or get_device()

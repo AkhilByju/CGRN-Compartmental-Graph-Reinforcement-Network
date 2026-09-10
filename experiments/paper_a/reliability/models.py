@@ -58,7 +58,15 @@ RELIABILITY_GATED_MLP = "reliability_gated_mlp"
 CELLV03 = "cellv0.3"
 MODEL_FAMILIES: tuple[str, ...] = (PLAIN_MLP, CONFIDENCE_MLP, RELIABILITY_GATED_MLP, CELLV03)
 
-RELIABILITY_AWARE: frozenset[str] = frozenset({CONFIDENCE_MLP, CELLV03})
+# Phase-3 Part A capacity control (Phase-3 task Part A). NOT a member of
+# MODEL_FAMILIES, so run_reliability.py never sweeps it into the frozen Phase-2
+# grid -- it is run only by the dedicated capacity-stress driver.
+CONFIDENCE_MLP_SAME_WIDTH = "confidence_mlp_same_width"
+ALL_FAMILIES: tuple[str, ...] = (*MODEL_FAMILIES, CONFIDENCE_MLP_SAME_WIDTH)
+
+RELIABILITY_AWARE: frozenset[str] = frozenset(
+    {CONFIDENCE_MLP, CONFIDENCE_MLP_SAME_WIDTH, CELLV03}
+)
 
 _MLP_SEARCH_RANGE = range(1, 6000)
 _MATCH_TOLERANCE = 0.02
@@ -240,7 +248,31 @@ def build_model(
             ReliabilityGatedMLP, RELIABILITY_GATED_MLP, raw_in_features=in_features,
             net_in_features=in_features, out_features=out_features, target_params=target,
         )
-    raise ValueError(f"unknown family {family!r}; expected one of {MODEL_FAMILIES}")
+    if family == CONFIDENCE_MLP_SAME_WIDTH:
+        # Phase-3 Part A: the ConfidenceMLP architecture given CellV0.3's exact
+        # hidden width -- deliberately NOT parameter-matched. Its input is
+        # 2*in_features wide, so it carries more parameters than CellV0.3; that
+        # is the point (an overpowered capacity control). Not shrunk, not tuned
+        # differently.
+        model = ConfidenceMLP(in_features, hidden_cells, out_features)
+        n_params = count_parameters(model)
+        return BuiltModel(
+            model=model,
+            family=CONFIDENCE_MLP_SAME_WIDTH,
+            parameter_count=n_params,
+            hidden_size=hidden_cells,
+            sizing={
+                "hidden_dim": hidden_cells,
+                "cellv03_hidden_cells": hidden_cells,
+                "net_in_features": 2 * in_features,
+                "target_params": target,
+                "params": n_params,
+                "param_ratio_vs_cellv03": n_params / target,
+                "params_within_budget": bool(n_params <= param_budget),
+                "same_width_as_cellv03": True,
+            },
+        )
+    raise ValueError(f"unknown family {family!r}; expected one of {ALL_FAMILIES}")
 
 
 # ---------------------------------------------------------------------------
