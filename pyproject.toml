@@ -30,6 +30,13 @@ dev = [
 classical-ml = [
     "xgboost>=2.0",
 ]
+# Paper A Phase 3 Part B: the official NeuMiss implementation, pinned to the
+# exact commit the benchmark was run against. Install with --no-deps (its
+# core NeuMissBlock needs only torch; the repo also lists pytorch-lightning,
+# which is unused). See experiments/paper_a/real_reliability/models.py.
+paper-a-phase3 = [
+    "neumiss @ git+https://github.com/marineLM/NeuMiss_sota@7902b8dbe7114e8dc3010b5e8b132c35806a9d74",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

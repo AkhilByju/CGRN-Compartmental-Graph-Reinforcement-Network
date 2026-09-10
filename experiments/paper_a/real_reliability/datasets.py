@@ -133,15 +133,20 @@ class RealPreparedDataset:
     y_val_raw: torch.Tensor | None = None
     y_test_raw: torch.Tensor | None = None
 
-    # classification only -- one class weight per class, computed once from the
-    # training labels and applied identically to every neural model.
+    # classification only -- computed once from the training labels and applied
+    # identically to every neural model. `class_weights` is the sklearn
+    # `balanced` per-class vector; `pos_weight` = n_neg / n_pos is the scalar
+    # for `BCEWithLogitsLoss` (every APS neural model emits one logit).
     class_weights: torch.Tensor | None = None
+    pos_weight: float | None = None
 
     meta: dict[str, Any] = field(default_factory=dict)
 
     @property
     def out_features(self) -> int:
-        return self.n_classes if self.task_type == "classification" else 1
+        """Readout width -- one logit for the (binary) real classification
+        task, one value for regression."""
+        return 1
 
     def inverse_transform_targets(self, standardized: torch.Tensor) -> torch.Tensor:
         if self.task_type != "regression":
@@ -293,9 +298,11 @@ def _prepare_aps(seed: int) -> RealPreparedDataset:
 
     # class weights: sklearn's `class_weight="balanced"` recipe
     # (n_samples / (n_classes * bincount)), computed once from TRAIN labels and
-    # applied identically to every neural model.
+    # applied identically to every neural model. pos_weight = n_neg / n_pos for
+    # the shared BCEWithLogitsLoss.
     counts = np.bincount(y_tr, minlength=2).astype(np.float64)
     w = counts.sum() / (2.0 * np.clip(counts, 1.0, None))
+    pos_weight = float(counts[0] / max(counts[1], 1.0))
 
     return RealPreparedDataset(
         name="aps",
@@ -313,6 +320,7 @@ def _prepare_aps(seed: int) -> RealPreparedDataset:
         missing_frac_val=_missing_fraction(m_val),
         missing_frac_test=_missing_fraction(m_te),
         class_weights=_t(w),
+        pos_weight=pos_weight,
         meta={
             "n_train": int(tr_idx.size), "n_val": int(val_idx.size), "n_test": int(y_te.size),
             "official_test": True,
