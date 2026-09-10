@@ -114,3 +114,20 @@ MLP are not re-run; their recorded records are reused for comparison.
 
 CellV0.3 is deliberately **not** in `models.MODEL_FAMILIES`, so
 `run_phase1.py` never sweeps it into the original screen.
+
+## Phase 2 — reliability / corruption benchmark (separate sub-package)
+
+`reliability/` — the **primary go/no-go experiment** for the CellV0.3 paper
+direction (user-commissioned 2026-09-09). Frozen CellV0.3 is put in the regime
+it was designed for: inputs with heterogeneous, **known** reliability. Four
+parameter-matched families (Plain MLP, Confidence-Augmented MLP,
+Reliability-Gated MLP, CellV0.3) × two corruption families (missing-feature,
+heterogeneous Gaussian) × 4 datasets (MNIST, Fashion-MNIST, Digits, California
+Housing) × 3 seeds = 96 runs. For Phase 2 only, CellV0.3's *input belief* is
+`(μ = x_corrupted, e = reliability, u = 0)` — input data, not an architecture
+change; `src/models/architecture_v0/conflict_normalized.py` is untouched.
+
+See `reliability/README.md` and `reliability/reliability_results.md`. Result
+(2026-09-09): **positive but not uniform** — a real robustness advantage over
+the reliability-aware baselines on the image tasks, a loss on Digits/missing,
+mixed elsewhere. `docs/research_log.md` 2026-09-09.

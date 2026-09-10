@@ -2510,3 +2510,132 @@ equations and recorded results are untouched.
 specification with an explicit implement-and-evaluate instruction; the
 comparison reuses the recorded arms rather than re-running them; nothing was
 tuned after seeing results.
+
+## 2026-09-09 (later same day) — Paper A Phase 2: reliability / corruption benchmark for CellV0.3
+
+**Context:** CellV0.3's frozen Phase-1 result (previous entry) was "makes the
+belief state causally load-bearing but buys no accuracy on clean data". Phase
+2 is the primary go/no-go for the CellV0.3 paper direction: it puts CellV0.3
+in the regime it was *designed* for — inputs with heterogeneous, **known**
+reliability — and asks whether propagating reliability/conflict through the
+cell beats conventional networks **given the same corrupted inputs and the
+same reliability signal**. Implementation + experiment only; CellV0.3 frozen,
+no CellV0.4, no confidence-formula tuning, no auxiliary losses. New package
+`experiments/paper_a/reliability/`; full tables
+`experiments/paper_a/reliability/reliability_results.md`; 90 new tests, full
+suite green (638).
+
+**Design.** 4 frozen datasets (MNIST, Fashion-MNIST, Digits, California
+Housing — Diabetes dropped for Phase-1 baseline instability), 2 corruption
+families, 4 model families, seeds 0/1/2 = **96 training runs** (23 min, MPS;
+no divergence; 1 near-cap CellV0.3 seed on california/gaussian). Corruption is
+applied *after* Phase-1 preprocessing and is a pure function of
+`(seed, split, epoch, replica)` — model identity never enters the RNG, so
+every model in a cell sees byte-identical `x_corrupted` and `c`. Each test
+severity averages 3 deterministic replicas before any across-seed statistic.
+
+* **Missing-feature:** mask each feature w.p. `p` (train `p ~ U{0,.1,.2,.3}`,
+  test `p ∈ {0,.1,.3,.5,.7}`); missing → `x=0`; `c = 1.0`/`1e-3` (frozen).
+* **Heterogeneous Gaussian:** per feature `σ_j ~ U(0,s)`, `x_j += N(0,σ_j²)`
+  (train `s ~ U{0,.25,.5,.75}`, test `s ∈ {0,.25,.5,.75,1,1.5}`);
+  `c_j = 1/(1+σ_j²)` (frozen).
+* **Models** (all sized to CellV0.3's actual param count, ≤0.21% off):
+  **A** Plain MLP (`x_corrupted`), **B** Confidence MLP (`concat(x,c)`, dim
+  `2D`), **C** Reliability-Gated MLP (`c·x_corrupted`), **D** CellV0.3 —
+  frozen `BeliefNetworkV03`, input belief `μ=x_corrupted, e=c, u=0` (input
+  data, not an architecture change; `conflict_normalized.py` untouched,
+  `ReliabilityCellV03` is a thin wrapper). Checkpoint selection: averaged
+  in-distribution corrupted-validation primary metric.
+
+**Two structural facts that shape the comparison:**
+
+* **Model C ≡ Model A under missingness.** A missing value is zero-imputed and
+  `c·0 = 0`; an observed value has `c=1`. So `c·x_corrupted == x_corrupted`
+  exactly and, with identical architecture/seed/corruption, Model C's outputs
+  are byte-identical to Model A's on missing-feature corruption. C is only a
+  distinct baseline under Gaussian noise.
+* **Plain / Reliability-Gated MLP are unstable on California Housing** —
+  R² seed-std ≈ 40 (some seeds diverge to R² ≈ −60 under corruption training
+  with lr=1e-2). CellV0.3 and the Confidence MLP are the only two models that
+  train stably there. Those cells carry no independent Plain/Gated signal.
+
+**Finding — Positive, but not uniform.** CellV0.3 corruption-AUC Δ (primary
+metric = accuracy / R², mean of 3 seeds), on the stable, non-degenerate
+comparisons:
+
+| dataset / corruption | Δ vs Confidence MLP | Δ vs Reliability-Gated (Gaussian only) |
+|---|---|---|
+| mnist / missing | **+0.030** | (≡ Plain) |
+| mnist / gaussian | **+0.075** | **+0.025** |
+| fashion_mnist / missing | **+0.025** | (≡ Plain) |
+| fashion_mnist / gaussian | **+0.066** | **+0.040** |
+| digits / missing | **−0.011** | (≡ Plain) |
+| digits / gaussian | +0.009 | +0.000 (tie) |
+| california_housing / missing | +0.025 | baseline unstable |
+| california_housing / gaussian | +0.217 | baseline unstable |
+
+* **vs Confidence MLP: ahead in 7/8 stable cells (median +0.028).** Decisive
+  and every-seed on **MNIST and Fashion-MNIST under both corruptions**
+  (+0.025…+0.075 AUC, seed-std ≤ 0.003). CellV0.3 **loses** on Digits/missing
+  at *every* severity (−0.007 at p=.1 widening to −0.029 at p=.7 — the
+  Confidence MLP genuinely handles Digits missingness better). Digits/Gaussian
+  is a tie.
+* **vs Reliability-Gated MLP** (Gaussian only): ahead on MNIST (+0.025) and
+  Fashion-MNIST (+0.040), tied on Digits.
+* **OOD degradation** (`metric(max-train) − metric(most-severe-test)`):
+  CellV0.3 has the smaller drop in every Gaussian cell; mixed on missingness
+  (≈ Plain on Fashion/missing).
+* **The Confidence MLP consistently *under*performs the Plain MLP on the
+  image tasks** (MNIST missing AUC 0.635 vs 0.651; MNIST Gaussian 1.384 vs
+  1.431) — doubling the input width with a mostly-constant `c` channel hurts a
+  plain MLP more than it helps. This is the most striking baseline result.
+
+**Mechanism (Sec 13/14) — the belief state does respond.**
+
+* **Reliability-response: mean hidden π falls with corruption severity in all
+  8 (dataset, corruption) cells, both layers.** E.g. MNIST/missing L1 π
+  0.44 → 0.22, L2 π 0.34 → 0.19 across `p: 0 → .7`; California/missing L2 π
+  0.64 → 0.26. CoV(π) stays 0.10–0.57 (never collapses). This is the
+  qualitative behaviour a reliability-propagating cell should show, and it
+  emerges without any auxiliary objective.
+* **Confidence intervention (Sec 15, eval-only): correct `c` beats *both*
+  all-ones and shuffled `c` in all 24 rows.** Alignment matters, not just the
+  marginal `c` distribution — e.g. Fashion-MNIST/missing at the OOD severity:
+  all-ones −0.134, **shuffled −0.424**. (California/missing/OOD is the one
+  place all-ones hurts more than shuffled.)
+
+**Numeric-range flag:** the known Digits near-constant-standardised-pixel
+artefact recurs — a single test example × cell with output precision ~1e-11
+(L1) / 1e-8 (L2) on the CellV0.3 Digits runs. All values finite; no NaN, no
+divergence, no protocol impact (same as CellV0.1/0.2/0.3 Phase-1).
+
+**Read (predeclared, Sec 19): Positive but dataset-dependent — not the "strong
+positive" bar, not "negative".** On every comparison where a reliability-aware
+baseline trained stably, CellV0.3 has the larger corruption-AUC and (mostly)
+the smaller OOD degradation; correct confidence always wins the intervention;
+π responds to severity everywhere. But the advantage is **concentrated on the
+two image tasks**, it is a **clear loss on Digits/missing**, a tie on
+Digits/Gaussian, and on California only CellV0.3 vs Confidence MLP is a valid
+comparison (CellV0.3 edges it). So: reliability propagation through CellV0.3
+*does* buy real robustness over baselines that receive the identical signal —
+concentrated where the input is high-dimensional and the corruption is dense —
+but it is not a uniform win, and the plain-MLP comparison (where CellV0.3
+looks strong everywhere) is not the one that counts.
+
+**Decision:** record and stop. **No** CellV0.3 change, **no** CellV0.4, **no**
+confidence-formula tuning, **no** per-dataset adjustment, **no** auxiliary
+loss, **no** re-run of only the Digits seeds. Do not write the paper yet; do
+not claim calibration (`e`/`u`/`π` are internal computational reliability
+variables). CellV0.1/0.2/0.3 equations and all Phase-1 results untouched.
+
+**Why:** the frozen protocol reuses Phase-1 splits/preprocessing/budgets;
+corruption is model-independent and deterministic; the four families are
+parameter-matched to CellV0.3; nothing was tuned after seeing results; the
+scientifically load-bearing comparison (vs the reliability-aware baselines,
+Sec 18) is reported honestly alongside where it fails.
+
+**Follow-up:** the paper case for CellV0.3, if made, rests on the image-task
+robustness advantage over reliability-aware baselines + the mechanism
+evidence (π-response, alignment-sensitivity), with the Digits/missing loss
+and the California baseline-instability caveat stated plainly. Any decision
+to extend the benchmark, add datasets, or revisit CellV0.3 is the user's.

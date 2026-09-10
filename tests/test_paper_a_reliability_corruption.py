@@ -83,10 +83,15 @@ def test_test_replicas_are_deterministic_and_distinct(clean, family):
     assert not torch.equal(reps[1].x, reps[2].x)
 
 
-def test_val_and_train_streams_do_not_collide(clean):
-    tr = corrupt(MISSING, clean, experiment_seed=0, split="train", epoch=0)
+def test_train_val_test_streams_are_all_independent(clean):
+    # no train/test leakage: each split keys its own RNG stream, and training
+    # corruption (any epoch) never coincides with the pinned test corruption.
+    tr0 = corrupt(MISSING, clean, experiment_seed=0, split="train", epoch=0)
+    tr1 = corrupt(MISSING, clean, experiment_seed=0, split="train", epoch=1)
     va = corrupt(MISSING, clean, experiment_seed=0, split="val", epoch=0, severity=0.3)
-    assert not torch.equal(tr.x, va.x)
+    te = corrupt(MISSING, clean, experiment_seed=0, split="test", epoch=0, severity=0.3)
+    for a, b in ((tr0, va), (tr0, te), (tr1, te), (va, te)):
+        assert not torch.equal(a.x, b.x)
 
 
 # ---------------------------------------------------------------------------

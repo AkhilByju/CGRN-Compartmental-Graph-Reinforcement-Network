@@ -485,6 +485,19 @@ accuracy is **indistinguishable from CellV0.2's** on all 7 datasets. Making
 confidence causally load-bearing this way bought no accuracy on the frozen
 screen. No redesign (Sec 10.6).
 
+**Phase-2 result (2026-09-09, `experiments/paper_a/reliability/`,
+`docs/research_log.md`):** put in its designed regime — inputs with
+heterogeneous *known* reliability, injected as the input belief
+`(mu = x_corrupted, e = c, u = 0)` — CellV0.3 shows a **real but
+dataset-dependent** robustness advantage over parameter-matched MLPs that
+receive the identical reliability signal: it beats the Confidence-Augmented
+MLP on corruption-AUC in 7/8 stable comparisons (decisively on MNIST /
+Fashion-MNIST under both corruption families), **loses** on Digits/missing,
+and ties on Digits/Gaussian; mean hidden `pi` falls with corruption severity
+in every cell and correct confidence beats shuffled/all-ones confidence in
+every intervention. Not the "strong positive" bar; not negative. Still no
+redesign (Sec 10.6) — this is input data, not an architecture change.
+
 CellV0.3 is a **third** CellV0-line aggregation operator, specified in full
 by the user. It keeps CellV0.2's parameterization exactly — one signed `V`
 `[out, in]` plus per-output `gain_raw` / `bias`, no relevance-gate matrix —
