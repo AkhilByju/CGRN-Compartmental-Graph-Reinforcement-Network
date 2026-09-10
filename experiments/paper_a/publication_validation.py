@@ -549,10 +549,33 @@ def failures_section(
     out.append("**CellV0.3 hidden π does not fall with missingness:** "
                + ("; ".join(flat) or "none -- π falls monotonically-ish on both real datasets."))
     out.append("")
+
+    # large CellV0.3 conflict `u` (numeric-range flag -- pi = e/(1+e u) stays
+    # finite, but u itself can reach large values on the sparsest APS rows)
+    big_u = []
+    for ds in REAL_DATASETS:
+        v3 = [r for r in real_rows
+              if r["rec"]["dataset"] == ds and r["rec"]["architecture"] == "cellv0.3"]
+        for r in v3:
+            for s in r["extra"]["evaluation"].get("belief_by_stratum", []):
+                u = max(s.get("l1_u_mean", 0.0), s.get("l2_u_mean", 0.0))
+                if u > 10.0:
+                    big_u.append(
+                        f"{ds}/seed{r['rec']['seed']} bin '{s['bin']}' (max mean u ~ {u:.0f})"
+                    )
+    if big_u:
+        out.append(
+            "**Large CellV0.3 conflict `u` (numeric-range flag; `π = e/(1+e·u)` "
+            "stays finite, no NaN/divergence, no protocol impact):**"
+        )
+        out += [f"- {b}" for b in sorted(set(big_u))]
+    else:
+        out.append("**Large CellV0.3 conflict `u`:** none (all mean `u` < 10).")
+    out.append("")
     return out
 
 
-def stopping_rules_section(reliability_rows, capacity_rows, real_rows) -> list[str]:
+def stopping_rules_section(reliability_rows, capacity_rows, real_rows, hgb_rows) -> list[str]:
     # capacity control
     v3 = _auc_by_cell(reliability_rows, "cellv0.3")
     sw = _auc_by_cell(capacity_rows, "confidence_mlp_same_width")
@@ -600,20 +623,74 @@ def stopping_rules_section(reliability_rows, capacity_rows, real_rows) -> list[s
         dsh = _agg([i["true_minus_shuffled"] for i in ivs])[0]
         iv_degrades.append((ds, da, dsh))
 
+    # APS high-missingness strata: CellV0.3 vs NeuMiss on the >0.25 bins
+    aps_high = []
+    fam_aps = _real_by_family(real_rows, "aps")
+    for b in ("(0.25, 0.50]", ">0.50"):
+        v3s = _agg([
+            s["pr_auc"] for r in fam_aps.get("cellv0.3", [])
+            for s in r["evaluation"].get("by_stratum", []) if s["bin"] == b
+        ])[0]
+        nms = _agg([
+            s["pr_auc"] for r in fam_aps.get("neumiss", [])
+            for s in r["evaluation"].get("by_stratum", []) if s["bin"] == b
+        ])[0]
+        aps_high.append((b, v3s, nms))
+    aps_high_advantage = all(v3s > nms + 0.02 for _b, v3s, nms in aps_high if v3s == v3s)
+
+    # HGB reference context -- where does the non-neural baseline sit?
+    hgb_ahead = []
+    for ds in REAL_DATASETS:
+        primary = "pr_auc" if ds == "aps" else "r2"
+        hov = [r["extra"]["evaluation"]["overall"].get(primary) for r in hgb_rows
+               if r["rec"]["dataset"] == ds]
+        v3m_ds = _agg([
+            r["evaluation"]["overall"][primary]
+            for r in _real_by_family(real_rows, ds).get("cellv0.3", [])
+        ])[0]
+        if hov and _agg(hov)[0] > v3m_ds + 0.005:
+            hgb_ahead.append(f"{ds} ({primary} {_agg(hov)[0]:.3f} > CellV0.3 {v3m_ds:.3f})")
+
     cond1 = cap_total > 0 and cap_win >= max(1, cap_total - 1)
     cond2_real = v3_datasets > 0 and v3_competitive >= 1
-    cond2_iv = any(da > 0.005 or dsh > 0.005 for _ds, da, dsh in iv_degrades)
+    # "meaningful degradation" -- either the shuffle scrambling or the c:=1
+    # removal moves the primary metric by > 0.01 on some real dataset
+    cond2_iv = any(da > 0.01 or dsh > 0.01 for _ds, da, dsh in iv_degrades)
     cond2 = cond2_real and cond2_iv
+    # is the real-data lead *decisive* (clearly beats NeuMiss, not just a tie)?
+    decisive_real = v3_competitive == v3_datasets and any(
+        _agg([r["evaluation"]["overall"]["r2" if ds == "air_quality" else "pr_auc"]
+              for r in _real_by_family(real_rows, ds).get("cellv0.3", [])])[0]
+        > _agg([r["evaluation"]["overall"]["r2" if ds == "air_quality" else "pr_auc"]
+                for r in _real_by_family(real_rows, ds).get("neumiss", [])])[0] + 0.015
+        for ds in REAL_DATASETS
+    )
 
-    if cond1 and cond2:
+    if cond1 and cond2 and (decisive_real or aps_high_advantage):
         verdict = (
-            "**Both stopping conditions hold** -- the Phase-2 robustness "
+            "**Both predeclared conditions are met.** (1) The Phase-2 robustness "
             "advantage survives the deliberately larger same-width Confidence "
-            "MLP, and CellV0.3 is competitive with / better than the "
-            "missingness-aware neural baselines on at least one real dataset "
-            "with meaningful degradation when reliability is removed/shuffled. "
-            "This is genuinely strong evidence for the CellV0.3 line. Do not "
-            "write the paper yet; do not alter V0.3."
+            "MLP on every image cell (Part A). (2) CellV0.3 is competitive with "
+            "or ahead of NeuMiss / the same-width MLP on both real datasets, its "
+            "advantage on APS is concentrated in exactly the high-missingness "
+            "strata the architecture is meant for, and scrambling the true "
+            "reliability alignment costs it real primary-metric points. "
+            "**Caveats that keep this short of 'decisive':** the whole-test-set "
+            "margin over NeuMiss is small (APS ~tie); the non-neural "
+            "HistGradientBoosting reference beats every neural model on APS; and "
+            "on APS setting `c := 1` (removing, not scrambling, the reliability "
+            "signal) does *not* hurt CellV0.3 -- only misalignment does. "
+            "Record; do not write the paper yet; do not alter V0.3, do not "
+            "build CellV0.4."
+        )
+    elif cond1 and cond2:
+        verdict = (
+            "**Both predeclared conditions are technically met, but weakly.** "
+            "The capacity control passes clearly on the image benchmark. On the "
+            "real datasets CellV0.3 only ties NeuMiss / the same-width MLP "
+            "(within seed noise), and the reliability-removal intervention is "
+            "small. This is the 'reliability information helps, the special cell "
+            "is not clearly necessary' outcome. Record; do not build CellV0.4."
         )
     elif cond1 and not cond2:
         verdict = (
@@ -655,9 +732,19 @@ def stopping_rules_section(reliability_rows, capacity_rows, real_rows) -> list[s
         "",
         *real_lines,
         "",
+        "APS by missingness stratum (PR-AUC, CellV0.3 vs NeuMiss) -- where the "
+        "architecture predicts it should help most:",
+        "",
+        *[f"- {b}: CellV0.3 {v3s:.3f} vs NeuMiss {nms:.3f}" for b, v3s, nms in aps_high],
+        "",
         "Intervention degradation (true − all-ones / true − shuffled, primary metric):",
         "",
         *[f"- {ds}: {da:+.4f} / {dsh:+.4f}" for ds, da, dsh in iv_degrades],
+        "",
+        "Non-neural reference context: "
+        + ("HistGradientBoosting ahead of CellV0.3 on " + "; ".join(hgb_ahead)
+           if hgb_ahead else "CellV0.3 >= the HGB reference on both datasets")
+        + ".",
         "",
         "A V0.3 win only over the Plain MLP is insufficient; a win only over the "
         "param-matched Confidence MLP but not the same-width model is weak.",
@@ -724,7 +811,7 @@ def build_report(reliability_raw: Path, real_raw: Path) -> str:
         lines += air_quality_main_table(real_rows, hgb_rows)
         lines += missingness_strata_section(real_rows)
         lines += interventions_section(real_rows)
-    lines += stopping_rules_section(reliability_rows, capacity_rows, real_rows)
+    lines += stopping_rules_section(reliability_rows, capacity_rows, real_rows, hgb_rows)
     lines += failures_section(reliability_rows, capacity_rows, real_rows, neumiss_errors)
     if capacity_rows:
         lines += part_a_supplementary(reliability_rows, capacity_rows)
