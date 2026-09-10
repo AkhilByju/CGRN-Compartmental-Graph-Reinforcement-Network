@@ -2639,3 +2639,133 @@ robustness advantage over reliability-aware baselines + the mechanism
 evidence (π-response, alignment-sensitivity), with the Digits/missing loss
 and the California baseline-instability caveat stated plainly. Any decision
 to extend the benchmark, add datasets, or revisit CellV0.3 is the user's.
+
+## 2026-09-09 (later same day) — Paper A Phase 3: publication-grade validation of CellV0.3
+
+**Context:** Phase 2's positive-but-non-uniform signal left two specific
+holes. Phase 3 closes exactly those, nothing else. CellV0.3 permanently
+frozen; no CellV0.4. Full tables:
+`experiments/paper_a/publication_validation_results.md`. New package
+`experiments/paper_a/real_reliability/`; +54 tests, full suite green (699).
+
+### Part A — capacity-stress the Confidence MLP
+
+**Concern:** Phase 2 parameter-matched every baseline to CellV0.3's actual
+count; the Confidence MLP's `concat(x, c)` input is `2·D` wide, so matching
+parameters forced it *narrower* than CellV0.3. Maybe that, not the
+architecture, is why it lost.
+
+**Test:** one new baseline, `confidence_mlp_same_width` — the Phase-2
+Confidence MLP at CellV0.3's exact hidden width, **not** parameter-matched.
+18 runs (`{mnist, fashion_mnist, digits} × {missing, gaussian} × seeds
+0–2`), the frozen Phase-2 protocol; CellV0.3 / matched-Confidence MLP read
+back from the recorded Phase-2 records.
+
+**Result — the Phase-2 advantage is NOT a parameter-matching artifact.**
+CellV0.3's corruption-AUC exceeds the same-width Confidence MLP in **5/6**
+cells:
+
+| dataset / corruption | CellV0.3 AUC | same-width AUC | Δ | same-width params vs V0.3 |
+|---|---|---|---|---|
+| mnist / missing | 0.666 | 0.638 | **+0.027** | ×1.65 |
+| mnist / gaussian | 1.460 | 1.400 | **+0.060** | ×1.65 |
+| fashion_mnist / missing | 0.593 | 0.572 | **+0.021** | ×1.65 |
+| fashion_mnist / gaussian | 1.305 | 1.251 | **+0.054** | ×1.65 |
+| digits / missing | 0.625 | 0.633 | −0.008 | ×0.69 |
+| digits / gaussian | 1.422 | 1.416 | +0.006 | ×0.69 |
+
+On MNIST / Fashion-MNIST the same-width model has **1.65× CellV0.3's
+parameters** and still loses on every seed. On Digits "same width" is a
+*smaller* model (CellV0.3's params are dominated by its `hidden→hidden`
+layer), and the known Digits/missing loss persists. **Capacity control:
+passes.**
+
+### Part B — real missing-sensor benchmarks
+
+New package. Two frozen public datasets with *natural* missingness:
+**APS Failure at Scania Trucks** (UCI 421, imbalanced binary, official
+60k/16k split, 170 features, official `10·FP + 500·FN` cost) and **UCI Air
+Quality** (UCI 360, regress `CO(GT)` from 8 sensor inputs, `−200` → missing,
+chronological 60/20/20). Preprocessing fits on observed *training* values
+only; missing → `0` for MLP/CellV0.3, kept `NaN` for NeuMiss; reliability
+`c = 1.0 / 1e-3` from the mask alone. Five models, all sized to CellV0.3's
+budget-fitted count (APS ≈ 100k, Air Quality ≈ 50k): Plain MLP,
+Confidence MLP (matched), Confidence MLP (same width), CellV0.3, and the
+**official NeuMiss** (`marineLM/NeuMiss_sota`, pinned commit `7902b8d`,
+installed `--no-deps` — its `NeuMissBlock` needs only torch; depth grid
+{1,3,5}). Plus a `HistGradientBoosting` reference (native missing support).
+Every neural model sweeps the shared LR grid {1e-3, 3e-3, 1e-2}; checkpoint
+selection by validation PR-AUC (APS) / R² (Air Quality); APS cost threshold
+frozen on validation.
+
+**NeuMiss integration: clean.** No compatibility problem; imported and
+trained on the first try.
+
+**Whole-test-set primary metric (mean ± std, 3 seeds):**
+
+| | APS PR-AUC | Air Quality R² |
+|---|---|---|
+| Plain MLP | 0.826 ± 0.016 | 0.750 ± 0.016 |
+| Confidence MLP (matched) | 0.841 ± 0.005 | 0.728 ± 0.016 |
+| Confidence MLP (same width) | 0.834 ± 0.013 | 0.738 ± 0.014 |
+| **CellV0.3** | **0.844 ± 0.014** | **0.760 ± 0.010** |
+| NeuMiss | 0.838 ± 0.012 | 0.743 ± 0.011 |
+| HistGradientBoosting (ref) | 0.876 ± 0.000 | 0.752 ± 0.004 |
+
+* **CellV0.3 is competitive with / slightly ahead of NeuMiss** on both real
+  datasets: Air Quality +0.017 (~1.5σ), APS +0.006 (a tie within noise). It
+  also edges the same-width Confidence MLP on both.
+* **The APS advantage is concentrated where the architecture predicts.** By
+  missingness stratum, PR-AUC on the sparsest rows: `>50% missing` CellV0.3
+  **0.848** vs NeuMiss 0.702 vs Plain MLP 0.671; `(25,50]%` CellV0.3 0.891 vs
+  NeuMiss 0.879. On the (majority) low-missingness rows the models are level.
+* **Non-neural HistGradientBoosting beats every neural model on APS** (0.876)
+  and matches on Air Quality — so "best neural primitive for known-reliability
+  inputs" is a narrower claim than "best model for these tabular tasks."
+* **Confidence intervention (eval-only).** APS: `true − shuffled = +0.057`
+  (scrambling the observation↔reliability alignment costs real PR-AUC) but
+  `true − all-ones = −0.006` (setting `c := 1` does *not* hurt — mild
+  improvement). Air Quality: `true − all-ones = +0.012`; `shuffled` is a
+  structural no-op there (every row's `c` is uniform — a row has 0 or all 8
+  inputs missing). So the mechanism responds to *misalignment* more than to
+  *absence* of the reliability signal, and mostly on APS.
+* **Belief state tracks missingness.** Mean hidden `π` falls monotonically
+  with the missingness bin on both real datasets (Air Quality L2 `π`:
+  0.41 at 0% missing → 0.001 at >50%). Conflict `u` reaches large values on
+  the sparsest APS rows (mean `u` up to ~1600 on one seed) — `π = e/(1+e·u)`
+  stays finite, no NaN/divergence, flagged as a numeric-range note.
+
+### Verdict (predeclared, Phase-3 "stopping rules")
+
+Both predeclared conditions are **technically met**: (1) the capacity control
+passes cleanly on the image benchmark; (2) CellV0.3 is competitive with /
+ahead of NeuMiss on ≥1 real dataset **and** scrambling the reliability
+alignment produces meaningful degradation (APS shuffle −0.057). But short of
+"decisive": the whole-test-set margin over NeuMiss is small (APS a tie), the
+non-neural HGB reference is ahead on APS, and `c := 1` removal does not hurt
+CellV0.3 on APS. Best read: **a real, mechanism-consistent inductive bias
+that shows up strongest where information is sparsest, on top of a genuine
+capacity-control pass — not a clean sweep over strong missing-data
+baselines.**
+
+**Decision: record and stop here.** No CellV0.4, no CellV0.3 change, no
+equation / confidence / loss / per-dataset tuning, no re-run of only the
+weak seeds. Do not write the paper yet. Do not claim calibration (`e`/`u`/`π`
+are internal computational reliability variables). CellV0.1/0.2/0.3
+equations and all Phase-1/Phase-2 results untouched.
+
+**Why:** Part A reuses the frozen Phase-2 protocol and only adds one
+non-tuned baseline; Part B fits every preprocessing statistic on training
+data only, parameter-matches the MLP families to CellV0.3, gives every
+neural model the identical LR grid and loss, uses the official NeuMiss at a
+pinned commit, and reports the HGB reference and every caveat (cap hits,
+large `u`, the `c:=1` non-effect) alongside the positive results. Nothing was
+tuned after seeing test numbers.
+
+**Follow-up:** if the CellV0.3 paper is written, its evidence is (a) the
+capacity-controlled image robustness advantage, (b) the real-data
+high-missingness-stratum advantage on APS, (c) the shuffle-intervention
+alignment sensitivity, (d) the π-tracks-missingness mechanism — with the
+NeuMiss near-tie, the HGB-ahead-on-APS result, and the `c:=1` non-effect
+stated as limits. Any further experiment or a decision to revisit CellV0.3
+is the user's.

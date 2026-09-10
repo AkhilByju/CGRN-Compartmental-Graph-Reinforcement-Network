@@ -498,6 +498,22 @@ in every cell and correct confidence beats shuffled/all-ones confidence in
 every intervention. Not the "strong positive" bar; not negative. Still no
 redesign (Sec 10.6) — this is input data, not an architecture change.
 
+**Phase-3 result (2026-09-09,
+`experiments/paper_a/publication_validation_results.md`,
+`docs/research_log.md`):** two follow-ups. **(A) Capacity control** — a
+Confidence MLP given CellV0.3's *exact* hidden width (not parameter-matched,
+~1.65x CellV0.3's params on MNIST/Fashion-MNIST) still loses to CellV0.3 on
+5/6 image cells, so the Phase-2 signal is not a parameter-matching artifact.
+**(B) Real missing-sensor data** — on APS Failure and UCI Air Quality
+CellV0.3 is competitive with / slightly ahead of the official **NeuMiss**
+(Air Quality R2 0.760 vs 0.743; APS PR-AUC 0.844 vs 0.838 ~ tie), its APS
+advantage concentrated in the high-missingness strata (>50% missing: 0.848
+vs NeuMiss 0.702), with shuffle-intervention alignment sensitivity — but
+non-neural HistGradientBoosting beats every neural model on APS and `c := 1`
+removal does not hurt CellV0.3 there. Both predeclared conditions technically
+met, short of decisive. **Recorded; no CellV0.4, no CellV0.3 change** (still
+Sec 10.6).
+
 CellV0.3 is a **third** CellV0-line aggregation operator, specified in full
 by the user. It keeps CellV0.2's parameterization exactly — one signed `V`
 `[out, in]` plus per-output `gain_raw` / `bias`, no relevance-gate matrix —

@@ -131,3 +131,26 @@ See `reliability/README.md` and `reliability/reliability_results.md`. Result
 (2026-09-09): **positive but not uniform** — a real robustness advantage over
 the reliability-aware baselines on the image tasks, a loss on Digits/missing,
 mixed elsewhere. `docs/research_log.md` 2026-09-09.
+
+## Phase 3 — publication-grade validation (capacity control + real missingness)
+
+Two follow-ups to Phase 2, and nothing else (user-commissioned 2026-09-09):
+
+* **Part A** (`capacity_stress.py`): one new baseline —
+  `confidence_mlp_same_width`, the Phase-2 Confidence MLP at CellV0.3's exact
+  hidden width, **not** parameter-matched (so ~1.65× CellV0.3's params on
+  MNIST/Fashion-MNIST). 18 runs, frozen Phase-2 protocol. **Result: the
+  Phase-2 advantage survives** — CellV0.3 beats the same-width model in 5/6
+  image cells.
+* **Part B** (`real_reliability/`): APS Failure at Scania Trucks + UCI Air
+  Quality — real missing sensor data — with 5 models (Plain MLP, Confidence
+  MLP matched / same-width, CellV0.3, and the **official NeuMiss**) + a
+  HistGradientBoosting reference. Shared LR grid, PR-AUC / R² checkpoint
+  selection, official APS cost threshold. **Result: CellV0.3 is competitive
+  with / slightly ahead of NeuMiss**, its APS edge concentrated in the
+  high-missingness strata, with alignment-sensitivity in the shuffle
+  intervention — but not a clean sweep (NeuMiss near-tie, HGB ahead on APS).
+
+Combined report: `publication_validation_results.md`
+(`experiments/paper_a/publication_validation.py`). `docs/research_log.md`
+2026-09-09. Verdict: **record and stop** — no CellV0.4.
