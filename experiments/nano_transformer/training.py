@@ -60,6 +60,7 @@ class RunConfig:
     token_budget: int = TOKEN_BUDGET
     batch_size: int = BATCH_SIZE
     context_length: int = CONTEXT_LENGTH
+    target_params: int = 1_000_000
     device_override: str | None = None
     checkpoint_dir: Path = field(
         default_factory=lambda: Path("experiments/nano_transformer/results/raw/checkpoints")
@@ -135,10 +136,13 @@ def evaluate_nll(
 
 
 def build_model_and_spec(
-    model_kind: str, vocab_size: int, context_length: int = CONTEXT_LENGTH
+    model_kind: str,
+    vocab_size: int,
+    context_length: int = CONTEXT_LENGTH,
+    target_params: int = 1_000_000,
 ) -> tuple[torch.nn.Module, dict]:
     spec = NanoTransformerSpec(vocab_size=vocab_size, context_length=context_length)
-    built = BUILDERS[model_kind](spec, target=1_000_000)
+    built = BUILDERS[model_kind](spec, target=target_params)
     return built.model, built.param_report()
 
 
@@ -156,7 +160,8 @@ def train_one_run(
     device = get_device(config.device_override)
 
     model, param_report = build_model_and_spec(
-        config.model_kind, dataset.tokenizer.vocab_size, config.context_length
+        config.model_kind, dataset.tokenizer.vocab_size, config.context_length,
+        config.target_params,
     )
     model.to(device)
 
