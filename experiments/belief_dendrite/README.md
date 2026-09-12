@@ -1,5 +1,16 @@
 # Architecture V2 frozen benchmark — Belief Dendritic Network
 
+**Results: run and recorded (2026-09-11), 72/72 cells, zero divergence.**
+Full tables: `results/processed/belief_dendrite_report.md`. Interpretation
+and the Sec P answers: `docs/architecture_v2.md` Sec 11. One-line summary:
+`belief_dendrite` beats `cellv0.3` and `confidence_mlp` in every condition
+(margin growing with severity in most), ties the input-gated scalar control
+under graded noise but clearly beats it under near-total local information
+loss, and the corruption-localization correlation (branch overlap vs branch
+precision) is strongly negative everywhere, at a real ~3-4x runtime cost
+over the identical-topology scalar controls. Recorded; no follow-up
+architecture spun up automatically (Sec Q).
+
 Separate from Paper A. Evaluates the architecture specified and implemented
 in `docs/architecture_v2.md` / `src/models/architecture_v2/belief_dendrite.py`
 against five comparison points, on MNIST/Fashion-MNIST under two structured

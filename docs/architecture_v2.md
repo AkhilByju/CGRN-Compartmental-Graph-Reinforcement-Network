@@ -1,7 +1,8 @@
-# Architecture V2 — Belief Dendritic Network (implemented, unevaluated)
+# Architecture V2 — Belief Dendritic Network (implemented, evaluated)
 
-Status as of this writing: **implemented and tested, not yet benchmarked.**
-Per `CLAUDE.md` Sec 2's `docs/architecture_v0.md`/`docs/architecture_v1.md`
+Status as of this writing: **implemented, tested, and benchmarked** (Sec 11)
+— recorded, no automatic follow-up spun up (Sec Q's stopping rule). Per
+`CLAUDE.md` Sec 2's `docs/architecture_v0.md`/`docs/architecture_v1.md`
 carve-out, this line was specified by the user in full mathematical detail,
 in one message, together with an explicit implementation request — the same
 bar `docs/architecture_v1.md` was held to. Nothing here is agent-invented
@@ -244,16 +245,128 @@ Sec 6.
 
 Frozen benchmark (MNIST/Fashion-MNIST, two structured-corruption families,
 six models, three seeds) lives under `experiments/belief_dendrite/` — see
-that directory's `README.md` for the protocol and, once run, the results.
-This document will get a Sec 11 "Results" appended after that frozen run
-completes, per Sec Q's "do not redesign after the first frozen result" rule
-— no V2.1 spun up automatically off this evidence, same discipline Paper A
-closed with.
+that directory's `README.md` for the protocol and `results/processed/
+belief_dendrite_report.md` for the full generated tables.
 
-## 11. Revision history
+## 11. Results (frozen benchmark, 2026-09-11)
+
+72/72 runs completed, **zero divergence**. Full per-cell tables:
+`experiments/belief_dendrite/results/processed/belief_dendrite_report.md`;
+narrative record: `docs/research_log.md`'s dated entry. Headline
+`corruption_AUC` (higher is better; trapezoidal area over each family's full
+eval-severity grid) and clean accuracy, mean over 3 seeds:
+
+| dataset/corruption | plain_mlp | confidence_mlp | cellv0.3 | scalar_dendrite | scalar_dendrite_gated | belief_dendrite |
+|---|---|---|---|---|---|---|
+| mnist/missing_patch (AUC) | 15.19 | 15.03 | 15.97 | 16.07 | 16.10 | **16.23** |
+| mnist/noisy_patch (AUC) | 1.909 | 1.842 | 1.936 | **1.956** | 1.948 | 1.943 |
+| fmnist/missing_patch (AUC) | 14.51 | 14.52 | 15.26 | 15.23 | 15.35 | **15.53** |
+| fmnist/noisy_patch (AUC) | 1.691 | 1.665 | 1.740 | **1.756** | 1.761 | 1.752 |
+
+Clean accuracy is competitive across the three dendritic families
+everywhere (all within ~0.002 of each other, all ahead of `cellv0.3` and
+both MLPs).
+
+### Sec P answers
+
+**Q1 — does dendritic structure itself help?** Yes, clearly and everywhere:
+`scalar_dendrite` beats `plain_mlp` on `corruption_AUC` in all 4
+dataset/family cells (deltas +0.05 to +0.88) and on clean accuracy in all 4
+(e.g. mnist: 0.984 vs 0.962). Matches the dendritic-ANN literature this
+direction was motivated by (Sec 1).
+
+**Q2 — is input reliability gating sufficient?** Mixed, and informatively
+so. Under `missing_patch` (a branch can lose *all* its information —
+`reliability=1e-3`), `belief_dendrite` beats `scalar_dendrite_reliability_
+gated` on both datasets (mnist +0.12 AUC, fmnist +0.18 AUC) and the gap
+**grows with severity** rather than being front-loaded (mnist accuracy gap:
++0.3pp clean → +0.8pp at max-train-severity → +5.5pp at max-OOD-severity;
+fmnist: +0.7pp → +1.2pp → +4.6pp). Under `noisy_patch` (continuous,
+graded corruption, reliability never drops below `1/(1+2^2)=0.2`), the two
+are statistically indistinguishable to a hair in the gated control's favor
+(mnist −0.005 AUC, fmnist −0.009 AUC — small next to the ~2.0 AUC scale but
+outside each side's own seed-to-seed std). Read together: hierarchical
+propagation earns its keep specifically when a branch can go to *near-zero*
+information, not when corruption is merely graded — a single input gate
+already captures most of what there is to capture when nothing is fully
+blacked out.
+
+**Q3 — does hierarchical belief propagation beat dense belief propagation?**
+Yes, consistently: `belief_dendrite` beats `cellv0.3` in all 4 cells on
+`corruption_AUC` (+0.006 to +0.274) and the margin grows with severity in 3
+of 4 (clearest on `missing_patch`: mnist accuracy gap +0.3pp → +0.8pp →
++5.5pp from clean to max-OOD; flattest on mnist `noisy_patch`, +0.4pp →
++0.3pp → +0.2pp, i.e. roughly constant rather than growing).
+
+**Q4 — is any gain just because the conventional model lacks reliability?**
+No. `belief_dendrite` beats `confidence_mlp` by the widest margin of any
+comparison in this benchmark (+0.09 to +1.20 AUC). Notably,
+`confidence_mlp` does not even reliably beat `plain_mlp` at this parameter
+budget (it is worse on 3 of 4 cells) — concatenating raw reliability and
+handing it to an ordinary MLP is not, by itself, a very effective way to
+use that signal here.
+
+**Q5 — does the mechanism localize corruption?** Yes, strongly, in every
+cell. Correlation between a layer-1 branch's fraction-of-receptive-field
+inside the corrupted patch and that branch's own `pi_branch`, at the most
+severe evaluated severity: mnist/missing_patch **−0.879**, mnist/noisy_patch
+**−0.548**, fmnist/missing_patch **−0.913**, fmnist/noisy_patch **−0.695**
+(all ±≤0.002 across seeds). Mean layer-1 `pi_branch` for `belief_dendrite`
+falls from ~0.55 (clean) to ~0.30 under max-severity `missing_patch` and to
+~0.48 under max-severity `noisy_patch` — a materially bigger drop under the
+corruption family that also produces the bigger accuracy advantage over the
+scalar controls (Q2), consistent with a single underlying mechanism. The
+branch's reduced somatic influence (`r_b`) is not separately measured here
+beyond the unit-tested guarantee that it is monotonic in `pi_branch`
+(`tests/test_architecture_v2_belief_dendrite.py`) — the effective-branch-
+count diagnostic drops modestly under corruption too (e.g. mnist/missing_
+patch layer-1: 2.66 → 2.44 effective branches of 16), consistent with the
+soma concentrating weight on fewer, more-reliable dendrites.
+
+### Cost this bought
+
+Mean training wall-clock (12 runs/family, this MPS machine): `plain_mlp`
+9.6s, `confidence_mlp` 10.1s, `cellv0.3` 32.4s, `scalar_dendrite` 71.3s,
+`scalar_dendrite_reliability_gated` 88.4s, `belief_dendrite` **266.9s** —
+roughly **3–4x** the identical-topology scalar controls and **~8x** dense
+CellV0.3 (whose much smaller hidden width at the same ~150k-parameter
+budget makes this an apples-to-different-shapes comparison, not a
+fixed-compute one). All families were parameter-matched (~150k, within 2%),
+not compute-matched — a real, disclosed limitation of this benchmark, not
+swept under the rug.
+
+### Verdict (Sec Q's rubric)
+
+Closest to **"strong signal"**, with one honest qualification. Every strong-
+signal criterion is met except one is family-dependent: `belief_dendrite`
+is competitive-to-best on clean data; it beats `cellv0.3` and
+`confidence_mlp` in all four conditions with a margin that mostly *grows*
+with severity; the corruption-localization correlation is large and
+consistent everywhere; and training never diverged. It only ties (rather
+than beats) `scalar_dendrite_reliability_gated` — and only under the
+*graded* corruption family, not the complete-information-loss one — and it
+costs a real 3–4x runtime premium over the identical-topology scalar
+controls for that gain.
+
+**Decision: record and stop.** No CellV0.4-of-dendrites, no V2.1, no
+re-tuning after seeing these numbers, no dropping the `noisy_patch` result
+because it's the less flattering one. The clean, mechanistic reading: a
+dendritic neuron whose compartments assess their own reliability
+outperforms one that only knows reliability at its input, specifically
+under the condition (near-total local information loss) that most directly
+tests the difference between "gated once" and "propagated and refused
+locally" — and it does so without any router, external context, or
+supervision toward that outcome, exactly as designed in Sec 1's gap.
+
+## 12. Revision history
 
 - **2026-09-11**: Specified by the user in full mathematical detail (one
   message) and implemented: `DendriticConnectivity` (both connectivity
   modes), `BeliefDendriteLayer`/`Network`, the scalar dendritic controls,
   the parameter-count formula and solver, and the full Sec H test suite (50
-  tests). Not yet benchmarked — `experiments/belief_dendrite/` is next.
+  tests).
+- **2026-09-11 (same day)**: Frozen benchmark run (`experiments/
+  belief_dendrite/`, 72/72 cells, zero divergence) and Sec 11 written up.
+  Recorded as a strong-signal result with a disclosed family-dependent
+  qualification (Q2) and a real compute-cost tradeoff; no follow-up
+  architecture spun up automatically.

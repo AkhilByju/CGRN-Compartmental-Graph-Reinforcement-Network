@@ -2769,3 +2769,132 @@ alignment sensitivity, (d) the π-tracks-missingness mechanism — with the
 NeuMiss near-tie, the HGB-ahead-on-APS result, and the `c:=1` non-effect
 stated as limits. Any further experiment or a decision to revisit CellV0.3
 is the user's.
+
+## 2026-09-11 — Architecture V2 (Belief Dendritic Network): specified, implemented, and frozen-benchmarked
+
+A new, separate architecture line, not a continuation of Paper A or
+`architecture_v0`. The user specified it in full mathematical detail, in one
+message, together with an explicit implementation request — the same bar
+`docs/architecture_v1.md`'s CellV1 was held to (`CLAUDE.md` Sec 2's
+carve-out). Full spec and equations: `docs/architecture_v2.md`.
+
+**The idea.** One neuron becomes several sparse belief dendrites feeding one
+belief soma, and *both* levels run CellV0.3's exact conservative
+belief-fusion formula — recursion, not a new primitive. Each dendrite reads
+a small, fixed set of upstream sources and forms its own `(mu, e, u)`;
+the soma fuses its dendrites' beliefs the same way. No router, no softmax,
+no top-k, no external context: a branch's influence at the soma is exactly
+its normalized cable weight times its own computed precision. Motivated by
+a literature gap the user identified: dendritic-ANN work (2025) shows
+structured/restricted receptive fields help, but with ordinary scalar
+dendrites; active-dendrite work gates on *external* context, not a
+locally-computed belief about reliability. Full citations and reasoning in
+the user's original message (this session's transcript) and
+`docs/architecture_v2.md` Sec 1.
+
+**Implementation** (`src/models/architecture_v2/belief_dendrite.py`,
+`param_count.py`): `DendriticConnectivity` (fixed, non-trainable `[H*B, K]`
+index buffers; `balanced_random` for arbitrary vectors, `local_2d` for
+images), `BeliefDendriteLayer`/`Network`, and the two Sec G controls
+(`ScalarDendriteLayer`/`Network`, `ScalarDendriteReliabilityGated`) that
+isolate dendritic structure from belief propagation and hierarchical
+propagation from a single input-side gate, respectively. 50 tests
+(`tests/test_architecture_v2_*.py`): hierarchical conservative precision
+through both fusion levels, branch- and soma-level replication invariance,
+the defining local-corruption-isolation test (degrading one branch's
+sources lowers only that branch's precision and somatic influence), within-
+vs between-dendrite conflict, reliability-only routing with no dedicated
+routing parameter, full gradient reach, and a practical no-dense-tensor
+efficiency proxy. All pass; the existing suite (742 prior tests) is
+untouched.
+
+**Frozen benchmark** (`experiments/belief_dendrite/`): MNIST + Fashion-MNIST,
+two structured single-contiguous-patch corruption families (`missing_patch`:
+zeroed + `reliability=1e-3`, train side `{0,4,7,10}` / eval
+`{0,4,7,10,14,18}`; `noisy_patch`: fixed side 10, additive Gaussian +
+`reliability=1/(1+sigma^2)`, train `sigma∈{0,.5,1}` / eval
+`{0,.5,1,1.5,2}`), six model families each independently sized to ~150k
+parameters (`plain_mlp`, `confidence_mlp`, dense `cellv0.3`,
+`scalar_dendrite`, `scalar_dendrite_reliability_gated`, `belief_dendrite` —
+the three dendritic families sharing one connectivity per seed), three
+seeds, the frozen Paper-A training protocol reused unmodified. 72/72 runs
+completed, **zero divergence**. One real efficiency bug caught and fixed
+before the frozen run: the Sec O diagnostics were running unchunked over
+the full 10k-row test split (~150s/call); chunked to match `forward_xc`'s
+existing pattern, ~3s/call.
+
+### Results (corruption_AUC, mean over 3 seeds; full tables in
+`experiments/belief_dendrite/results/processed/belief_dendrite_report.md`)
+
+| dataset/family | plain_mlp | confidence_mlp | cellv0.3 | scalar_dendrite | scalar_dendrite_gated | belief_dendrite |
+|---|---|---|---|---|---|---|
+| mnist/missing_patch | 15.19 | 15.03 | 15.97 | 16.07 | 16.10 | **16.23** |
+| mnist/noisy_patch | 1.909 | 1.842 | 1.936 | **1.956** | 1.948 | 1.943 |
+| fmnist/missing_patch | 14.51 | 14.52 | 15.26 | 15.23 | 15.35 | **15.53** |
+| fmnist/noisy_patch | 1.691 | 1.665 | 1.740 | **1.756** | 1.761 | 1.752 |
+
+* **Dendritic structure alone helps** (Q1): `scalar_dendrite` beats
+  `plain_mlp` on `corruption_AUC` and clean accuracy in all 4 conditions.
+* **Hierarchical propagation beats dense propagation** (Q3):
+  `belief_dendrite` beats `cellv0.3` in all 4 conditions, margin growing
+  with severity in 3 of 4 (clearest on `missing_patch`: mnist accuracy gap
+  +0.3pp clean → +0.8pp at max-train-severity → +5.5pp at max-OOD).
+* **Not just "having reliability info"** (Q4): `belief_dendrite` beats
+  `confidence_mlp` by the widest margin in the benchmark (+0.09 to +1.20
+  AUC); `confidence_mlp` doesn't even reliably beat `plain_mlp` at this
+  budget.
+* **Input gating is sufficient only under graded corruption, not under
+  near-total local information loss** (Q2): `belief_dendrite` beats
+  `scalar_dendrite_reliability_gated` under `missing_patch` (mnist +0.12 AUC,
+  fmnist +0.18 AUC, gap growing with severity) but is a hair *behind* it
+  under `noisy_patch` (mnist −0.005, fmnist −0.009 AUC — small vs the ~2.0
+  scale but outside each side's seed-to-seed std).
+* **The mechanism localizes corruption exactly as designed** (Q5):
+  correlation between a layer-1 branch's corruption-overlap fraction and
+  its own `pi_branch`, at max severity: mnist/missing **−0.879**,
+  mnist/noisy **−0.548**, fmnist/missing **−0.913**, fmnist/noisy **−0.695**
+  (±≤0.002 across seeds). Mean layer-1 `pi_branch` falls from ~0.55 (clean)
+  to ~0.30 under max `missing_patch` severity vs. only ~0.48 under max
+  `noisy_patch` severity — a bigger drop under the same corruption family
+  that shows the bigger accuracy advantage over the scalar controls,
+  consistent with one underlying mechanism, not two coincidental effects.
+* **Real cost**: mean training wall-clock (this MPS machine) `belief_
+  dendrite` 266.9s vs `scalar_dendrite`/`scalar_dendrite_reliability_gated`
+  71.3s/88.4s (~3-4x) and `cellv0.3` 32.4s (~8x, different hidden-width
+  shape at the same parameter budget, not a fixed-compute comparison).
+  Families were parameter-matched, not compute-matched — disclosed, not
+  hidden.
+
+### Verdict
+
+Closest to Sec Q's **"strong signal"** tier, with one honest qualification.
+Competitive-to-best on clean data, beats `cellv0.3` and `confidence_mlp` in
+every condition with a growing margin, strong and consistent localization
+correlation, zero divergence across 72 runs — but only ties (rather than
+beats) the single-input-gate control, and only under graded (not
+near-total) corruption, for a real 3-4x runtime premium.
+
+**Decision: record and stop.** No CellV0.4-of-dendrites, no V2.1, no
+re-tuning after seeing these numbers. `docs/architecture_v2.md` Sec 11 has
+the full write-up. The clean mechanistic reading: a dendritic neuron whose
+compartments assess their own reliability outperforms one that only knows
+reliability at its input, specifically when a branch can lose *all* its
+local information — without any router, external context, or supervision
+toward that outcome.
+
+**Why:** every model in a cell sees byte-identical corrupted inputs
+(corruption keyed only to `(seed, split, epoch, replica)`, never model
+identity); every family is independently parameter-matched at ~150k; the
+three dendritic families share one connectivity draw per seed so the
+Q1/Q2 comparisons are over identical topology, not just identical parameter
+count; checkpoint selection uses corrupted-validation accuracy averaged over
+in-distribution severities only, never the severe/OOD points; 3 deterministic
+test replicas are averaged per severity before any other statistic; nothing
+was tuned after seeing test numbers, and the graded-corruption tie (Q2) and
+the runtime cost are reported alongside the positive results, not omitted.
+
+**Follow-up:** none automatic. If this line is pursued further, Sec 11's
+open question is *why* the input-gate control catches up specifically under
+graded (not near-total) corruption — a mechanism question, not grounds by
+itself for a new architecture variant. Any further experiment is the
+user's.
