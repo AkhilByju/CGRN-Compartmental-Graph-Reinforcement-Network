@@ -19,6 +19,9 @@ dependencies = [
     "pandas>=2.2",
     "matplotlib>=3.8",
     "tqdm>=4.66",
+    # Byte-level BPE tokenizer training/encoding (nano-transformer exploratory
+    # work, experiments/nano_transformer/) -- generic infra, not architecture.
+    "tokenizers>=0.20",
 ]
 
 [project.optional-dependencies]
