@@ -2898,3 +2898,49 @@ open question is *why* the input-gate control catches up specifically under
 graded (not near-total) corruption — a mechanism question, not grounds by
 itself for a new architecture variant. Any further experiment is the
 user's.
+
+## 2026-09-12 — CellV0.3 nano-transformer: negative result on TinyStories
+
+Exploratory, separate from Paper A (branch `cellv03_nano_transformer`, not
+merged). User-specified task: does CellV0.3 (frozen, unmodified) work as a
+Transformer FFN hidden-neuron primitive, at ~1M parameters, on TinyStories?
+Full writeup: `experiments/nano_transformer/cellv03_transformer_results.md`.
+
+Three models, identical backbone (pre-norm, RMSNorm, RoPE, causal SDPA
+attention, tied embedding, `d_model=128`, 4 heads, 5 layers, context 256):
+`swiglu` (conventional SwiGLU FFN), `cellv0.3` (`BeliefFFN`, raw-moment
+kernel, input belief reset to `(mu=x, e=1, u=0)` every call), and
+`fixed_confidence` (identical `V`/`gain`/`bias`/`out_proj` shapes as
+`cellv0.3`, no belief mechanism — isolates parameterization from
+computation). 3 seeds x LR grid `{3e-4, 1e-3}`, 30M training tokens each,
+best LR selected by validation NLL, single held-out test evaluation.
+
+**Result: negative, and unusually clean.** Test NLL: `swiglu` 1.84,
+`fixed_confidence` 2.20, `cellv0.3` 2.33 (PPL 6.3 / 9.0 / 10.2) — CellV0.3
+loses to a conventional FFN by ~26% higher perplexity, loses to its own
+mechanism-stripped control by 0.13 nats, is behind at every point on the
+learning-efficiency curve (not just at convergence), and costs 2.46x the
+per-step compute (under Sec 15's 3x flag, but a real cost for worse
+performance). The optional 0.5M/2M scaling follow-up made the picture
+unambiguous: SwiGLU improves steadily with capacity (2.11 -> 1.84 -> 1.73
+nats); CellV0.3 does not (2.32 -> 2.33 -> 2.34, essentially flat) — the
+disadvantage *widens* with scale rather than closing.
+
+Not a null mechanism, though: because the FFN resets the input belief to
+neutral every call, `e_hidden` is provably and empirically always exactly
+1 (`pi_hidden = 1/(1+u_hidden)`, confidence is carried entirely by conflict,
+never evidence) — and `u_hidden` genuinely evolves during training (mean
+`0.99 -> ~0.82` at the last layer) rather than staying frozen at init.
+Neutralizing it (`sqrt(pi_hidden) -> 1`, or equivalently here `u -> 0`,
+since `e≡1` makes the two Sec-12-prescribed ablations numerically identical
+in this specific application) costs ~0.06 nats — real, but far too small to
+close the gap. Read together: the belief computation is used, just not
+usefully, at this scale/task/architecture.
+
+**Decision: record and stop** (Sec 18's own rule for a negative result). No
+CellV0.4, no retuning CellV0.3 toward language modeling off this evidence.
+Scoped narrowly: one FFN-hidden-neuron application of dense CellV0.3, one
+dataset, parameters up to 2M — says nothing about `BeliefDendriteNetwork`
+(Architecture V2, a different, already positively evaluated mechanism) or
+about CellV0.3 in the reliability-benchmark setting it was designed for
+(Paper A).
