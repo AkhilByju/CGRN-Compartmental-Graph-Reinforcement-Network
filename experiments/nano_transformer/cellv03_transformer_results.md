@@ -279,6 +279,53 @@ different, already separately and positively evaluated mechanism, see
 `docs/architecture_v2.md`) or about CellV0.3 in non-language-modeling
 settings (Paper A).
 
+## 10. Addendum: LLM-judge qualitative scoring (post-hoc, not in the original Sec 1-19 protocol)
+
+Distinct-n (Sec 13) measures lexical variety, not quality — it can't tell
+you whether a continuation is grammatical or makes narrative sense. To get
+an actual quality signal beyond loss, the same 30-generation-per-model set
+used for Sec 13 was graded on the TinyStories paper's own axes (grammar,
+creativity, consistency, plot; 1-10 each) by an LLM judge, blinded to model
+identity. **Judge was Claude, not GPT-4** — a deliberate, disclosed
+deviation from the original paper's methodology, run interactively in one
+session rather than as a rerunnable API script (see
+`results/raw/llm_judge/rubric.md` for the exact prompt and blinding
+procedure). Mean over 30 generations, std in parens:
+
+| model | grammar | creativity | consistency | plot | overall |
+|---|---|---|---|---|---|
+| swiglu | 3.87 (1.43) | 3.40 (0.88) | 1.80 (0.70) | 2.17 (0.90) | **2.81** (0.80) |
+| fixed_confidence | 1.97 (0.87) | 2.13 (0.50) | 1.23 (0.56) | 1.13 (0.34) | 1.62 (0.46) |
+| cellv0.3 | 1.87 (0.62) | 1.97 (0.48) | 1.23 (0.42) | 1.20 (0.40) | 1.57 (0.39) |
+
+Welch's t on the overall (4-axis mean) score, n=30 each: swiglu vs
+fixed_confidence t=6.95, swiglu vs cellv0.3 t=7.54 (both decisive) —
+**fixed_confidence vs cellv0.3 t=0.45** (indistinguishable from noise).
+
+Two things this adds beyond Sec 13 and the main loss table:
+
+1. **All three models are qualitatively poor in absolute terms** — even
+   swiglu's 2.81/10 overall reflects real, frequent breakdowns (abrupt
+   unrelated-story restarts mid-passage, character/name swaps, invented
+   non-words). At 1M params / 30M tokens, none of these three produce
+   reliably grammatical, consistent short stories — a useful absolute
+   anchor that a relative "cellv0.3 loses" framing alone doesn't convey.
+2. **The judge confirms the loss ranking's top split but not its bottom
+   split.** swiglu is judged decisively better than both alternatives on
+   every axis, consistent with Sec 1's test-NLL gap. But fixed_confidence's
+   0.127-nat/token loss advantage over cellv0.3 (Sec 9) does **not** show up
+   as a perceptible quality difference here (t=0.45) — to a blinded reader,
+   the two are equally broken. The belief mechanism's cost is real in loss
+   terms but not in a way a human/LLM reader would notice at this
+   checkpoint; consistent with Sec 5's finding that the mechanism's causal
+   effect (+0.063 nats from neutralization) is small relative to the
+   ~0.48-nat gap to swiglu.
+
+Full per-item scores and one-line justifications:
+`results/raw/llm_judge/graded_items.json`. Rubric and blinding procedure:
+`results/raw/llm_judge/rubric.md`. Aggregate stats:
+`results/processed/llm_judge_summary.json`.
+
 ## Reproducing this
 
 See `README.md`. Raw run records: `results/raw/run_records/*.json`. Raw
@@ -287,4 +334,6 @@ generations: `results/raw/generations/*.json`. Checkpoints:
 `results/raw/run_sweep_console.log`. Aggregated JSON:
 `results/processed/sweep_summary.json`,
 `results/processed/mps_speed_preflight.json`,
-`results/processed/scaling_summary.json`.
+`results/processed/scaling_summary.json`,
+`results/processed/llm_judge_summary.json`. LLM-judge raw data:
+`results/raw/llm_judge/`.

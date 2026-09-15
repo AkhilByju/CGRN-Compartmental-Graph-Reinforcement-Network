@@ -2944,3 +2944,34 @@ dataset, parameters up to 2M — says nothing about `BeliefDendriteNetwork`
 (Architecture V2, a different, already positively evaluated mechanism) or
 about CellV0.3 in the reliability-benchmark setting it was designed for
 (Paper A).
+
+## 2026-09-15 — CellV0.3 nano-transformer: LLM-judge qualitative scoring (supplementary, post-hoc)
+
+User asked for "real measurable metrics, like grammar," not just loss —
+distinct-n (Sec 13) measures lexical variety, not quality. Added a
+supplementary eval, not part of the original Sec 1-19 protocol: the same
+30-generation-per-model set (10 prompts x 3 sampling seeds) graded on the
+TinyStories paper's own axes (grammar, creativity, consistency, plot;
+1-10), blinded to model identity, judge = Claude this session (disclosed
+deviation from GPT-4, one-off rather than a rerunnable API script — the
+user explicitly chose this over building API-key-gated infra for a single
+pass). Full method, rubric, and per-item scores:
+`experiments/nano_transformer/results/raw/llm_judge/`.
+
+**Result: confirms the top split, flattens the bottom split.** Overall
+(4-axis mean, n=30): swiglu 2.81, fixed_confidence 1.62, cellv0.3 1.57.
+Welch's t: swiglu beats both alternatives decisively (t=6.95, t=7.54);
+fixed_confidence vs cellv0.3 is noise (t=0.45). So the judge agrees with
+the loss ranking that swiglu wins, but disagrees that fixed_confidence is
+meaningfully better than cellv0.3 — the 0.127-nat/token loss gap between
+them (Sec 9 of the results doc) doesn't correspond to a perceptible quality
+difference to a blinded reader. Also notable on its own: all three models
+are qualitatively poor in absolute terms (best overall score 2.81/10) —
+frequent mid-passage unrelated-story restarts, character/name swaps, and
+invented non-words even in swiglu's outputs, at this 1M-param/30M-token
+scale.
+
+**Follow-up:** none automatic — this doesn't change Sec 18's stopping
+decision above, it adds a second, independent line of evidence to it. If a
+future experiment at this scale wants a rerunnable version of this metric,
+it needs an API-key-gated judge script rather than an interactive pass.
