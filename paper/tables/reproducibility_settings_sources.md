@@ -2,6 +2,8 @@
 
 This appendix table was assembled from the frozen Paper-A harnesses and recorded JSON runs. No experiments were run, and no model or result code was changed. There is no separate YAML/JSON “config” file for these experiments: the protocol is defined by the harness/training modules and copied into each raw run record under `config`.
 
+The frozen raw-record sets used here contain 220 Phase 1 records, 114 controlled-reliability/capacity records, and 36 real-reliability records (excluding history files). The processed aggregates were used for cross-checking dataset/model/seed coverage; raw records were authoritative whenever an aggregate had dropped a setting.
+
 ## Source files and fields
 
 | Table values | Source file or frozen record set | Source field / code symbol |
