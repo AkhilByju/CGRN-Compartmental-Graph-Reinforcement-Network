@@ -1,86 +1,113 @@
 % Frozen settings recovered from the Paper-A harnesses and run records.
 % Import with: \input{tables/reproducibility_settings}
 \begingroup
-\scriptsize
-\setlength{\tabcolsep}{2.5pt}
+\small
+\setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.12}
 
-\begin{table*}[t]
+% Table C1: clean benchmark model sizes
+\begin{table}[t]
 \centering
-\caption{Exact optimization and model settings used in the Paper-A clean and controlled-reliability benchmarks.  ``25\%/100\%'' denotes the two recorded training fractions; batch sizes are effective batch sizes in the same order when they differ. Maximum epochs were not recorded.}
+\caption{Clean benchmark model sizes. Rows with two model names have identical recorded widths and parameter counts.}
 \label{tab:reproducibility_settings}
-\begin{tabular}{p{0.13\textwidth}p{0.12\textwidth}r r r l l l l l l l l l}
+\begin{tabularx}{\linewidth}{@{}p{0.25\linewidth}Xrrr@{}}
 \toprule
-Experiment / dataset & Model family & Width & Trainable params & Batch & Optimizer & LR candidates & WD & Loss & Max steps & Patience & Val./checkpoint metric & Train fraction; seeds \\
+Dataset & Model & Hidden width & Params & Batch \\
 \midrule
-P1 clean / breast cancer & CellV0.1 & 56 & 9,858 & 85/128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / breast cancer & MLP matched & 299 & 9,869 & 85/128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / breast cancer & MLP state-count & 168 & 5,546 & 85/128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / wine & CellV0.1 & 63 & 9,894 & 26/106 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / wine & MLP matched & 582 & 9,897 & 26/106 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / wine & MLP state-count & 189 & 3,216 & 26/106 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / digits & CellV0.1 & 82 & 24,938 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / digits & MLP matched & 332 & 24,910 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / digits & MLP state-count & 246 & 18,460 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / diabetes & CellV0.1 & 65 & 9,946 & 66/128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,500 (30$\times$50) & $R^2$ & 25\%/100\%; 0,1,2 \\
-P1 clean / diabetes & MLP matched & 829 & 9,949 & 66/128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,500 (30$\times$50) & $R^2$ & 25\%/100\%; 0,1,2 \\
-P1 clean / diabetes & MLP state-count & 195 & 2,341 & 66/128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,500 (30$\times$50) & $R^2$ & 25\%/100\%; 0,1,2 \\
-P1 clean / California housing & CellV0.1 & 66 & 9,967 & 128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,600 (8$\times$200) & $R^2$ & 25\%/100\%; 0,1,2 \\
-P1 clean / California housing & MLP matched & 997 & 9,971 & 128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,600 (8$\times$200) & $R^2$ & 25\%/100\%; 0,1,2 \\
-P1 clean / California housing & MLP state-count & 198 & 1,981 & 128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,600 (8$\times$200) & $R^2$ & 25\%/100\%; 0,1,2 \\
-P1 clean / MNIST; Fashion-MNIST & CellV0.1 & 85 & 148,760 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,600 (8$\times$200) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / MNIST; Fashion-MNIST & MLP matched & 187 & 148,675 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,600 (8$\times$200) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 clean / MNIST; Fashion-MNIST & MLP state-count & 255 & 202,735 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,600 (8$\times$200) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 follow-up / breast cancer & CellV0.2 / CellV0.3 & 83 & 9,879 & 85/128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 follow-up / wine & CellV0.2 / CellV0.3 & 90 & 9,903 & 26/106 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 follow-up / digits & CellV0.2 / CellV0.3 & 123 & 24,733 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & accuracy & 25\%/100\%; 0,1,2 \\
-P1 follow-up / diabetes & CellV0.2 / CellV0.3 & 92 & 9,845 & 66/128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,500 (30$\times$50) & $R^2$ & 25\%/100\%; 0,1,2 \\
-P1 follow-up / California housing & CellV0.2 / CellV0.3 & 93 & 9,859 & 128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,600 (8$\times$200) & $R^2$ & 25\%/100\%; 0,1,2 \\
-P1 follow-up / MNIST; Fashion-MNIST & CellV0.2 / CellV0.3 & 157 & 149,945 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,600 (8$\times$200) & accuracy & 25\%/100\%; 0,1,2 \\
-\midrule
-P2 controlled / MNIST; Fashion-MNIST & plain MLP & 189 & 150,265 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,600 (8$\times$200) & mean in-distribution accuracy & 100\%; 0,1,2 \\
-P2 controlled / MNIST; Fashion-MNIST & confidence MLP & 95 & 150,015 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,600 (8$\times$200) & mean in-distribution accuracy & 100\%; 0,1,2 \\
-P2 controlled / MNIST; Fashion-MNIST & reliability-gated MLP & 189 & 150,265 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,600 (8$\times$200) & mean in-distribution accuracy & 100\%; 0,1,2 \\
-P2 controlled / MNIST; Fashion-MNIST & CellV0.3 & 157 & 149,945 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,600 (8$\times$200) & mean in-distribution accuracy & 100\%; 0,1,2 \\
-P2 controlled / digits & plain MLP & 330 & 24,760 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & mean in-distribution accuracy & 100\%; 0,1,2 \\
-P2 controlled / digits & confidence MLP & 178 & 24,752 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & mean in-distribution accuracy & 100\%; 0,1,2 \\
-P2 controlled / digits & reliability-gated MLP & 330 & 24,760 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & mean in-distribution accuracy & 100\%; 0,1,2 \\
-P2 controlled / digits & CellV0.3 & 123 & 24,733 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & mean in-distribution accuracy & 100\%; 0,1,2 \\
-P2 controlled / California housing & plain/reliability-gated MLP & 986 & 9,861 & 128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,600 (8$\times$200) & mean in-distribution $R^2$ & 100\%; 0,1,2 \\
-P2 controlled / California housing & confidence MLP & 548 & 9,865 & 128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,600 (8$\times$200) & mean in-distribution $R^2$ & 100\%; 0,1,2 \\
-P2 controlled / California housing & CellV0.3 & 93 & 9,859 & 128 & AdamW & $10^{-2}$ fixed & 0 & MSE & 15,000 & 1,600 (8$\times$200) & mean in-distribution $R^2$ & 100\%; 0,1,2 \\
-P3 capacity / MNIST; Fashion-MNIST & same-width confidence MLP & 157 & 247,913 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,600 (8$\times$200) & mean in-distribution accuracy & 100\%; 0,1,2 \\
-P3 capacity / digits & same-width confidence MLP & 123 & 17,107 & 128 & AdamW & $10^{-2}$ fixed & 0 & CE & 15,000 & 1,500 (30$\times$50) & mean in-distribution accuracy & 100\%; 0,1,2 \\
+Breast Cancer & CellV0.1 & 56 & 9,858 & 85/128 \\
+Breast Cancer & MLP matched & 299 & 9,869 & 85/128 \\
+Breast Cancer & MLP state-count & 168 & 5,546 & 85/128 \\
+Wine & CellV0.1 & 63 & 9,894 & 26/106 \\
+Wine & MLP matched & 582 & 9,897 & 26/106 \\
+Wine & MLP state-count & 189 & 3,216 & 26/106 \\
+Digits & CellV0.1 & 82 & 24,938 & 128 \\
+Digits & MLP matched & 332 & 24,910 & 128 \\
+Digits & MLP state-count & 246 & 18,460 & 128 \\
+Diabetes & CellV0.1 & 65 & 9,946 & 66/128 \\
+Diabetes & MLP matched & 829 & 9,949 & 66/128 \\
+Diabetes & MLP state-count & 195 & 2,341 & 66/128 \\
+California Housing & CellV0.1 & 66 & 9,967 & 128 \\
+California Housing & MLP matched & 997 & 9,971 & 128 \\
+California Housing & MLP state-count & 198 & 1,981 & 128 \\
+MNIST; Fashion-MNIST & CellV0.1 & 85 & 148,760 & 128 \\
+MNIST; Fashion-MNIST & MLP matched & 187 & 148,675 & 128 \\
+MNIST; Fashion-MNIST & MLP state-count & 255 & 202,735 & 128 \\
+Breast Cancer & CellV0.2; CellV0.3 & 83 & 9,879 & 85/128 \\
+Wine & CellV0.2; CellV0.3 & 90 & 9,903 & 26/106 \\
+Digits & CellV0.2; CellV0.3 & 123 & 24,733 & 128 \\
+Diabetes & CellV0.2; CellV0.3 & 92 & 9,845 & 66/128 \\
+California Housing & CellV0.2; CellV0.3 & 93 & 9,859 & 128 \\
+MNIST; Fashion-MNIST & CellV0.2; CellV0.3 & 157 & 149,945 & 128 \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
+\parbox{0.98\linewidth}{\footnotesize Batch entries with two values are effective batch sizes for the 25\% and 100\% training fractions, respectively.}
+\end{table}
 
-\vspace{2pt}
-\parbox{0.98\textwidth}{\scriptsize CE = cross-entropy. Effective batch entries with two values are ordered as 25\%/100\% training fraction. ``not recorded'' is used only where the frozen source contains no value.}
-\end{table*}
-
-\begin{table*}[t]
+% Table C2: clean benchmark optimization
+\begin{table}[t]
 \centering
-\caption{Exact settings for the APS and Air Quality real-reliability experiments.  Neural runs share the predeclared learning-rate grid; the selected value varied by seed and is retained in the run records.}
-\begin{tabular}{p{0.15\textwidth}p{0.14\textwidth}r r r l l l l l l l l}
+\caption{Clean benchmark optimization and checkpoint settings. Identical model-family settings are collapsed.}
+\begin{tabularx}{\linewidth}{@{}p{0.24\linewidth}llllllX@{}}
 \toprule
-Dataset & Model family & Width & Trainable params & Batch & Optimizer & LR candidates & WD & Loss & Max steps & Patience & Val./checkpoint; fraction; seeds \\
+Dataset/group & Optimizer & LR & WD & Loss & Max steps & Patience & Selection metric \\
 \midrule
-APS & plain MLP & 579 & 99,589 & 128 & AdamW & $10^{-3},3\!\times\!10^{-3},10^{-2}$ & 0 & BCE-with-logits (pos. weight) & 7,000 & 1,600 (8$\times$200) & PR-AUC; fixed split; 0,1,2 \\
-APS & confidence MLP & 291 & 99,523 & 128 & AdamW & same grid & 0 & BCE-with-logits (pos. weight) & 7,000 & 1,600 (8$\times$200) & PR-AUC; fixed split; 0,1,2 \\
-APS & same-width confidence MLP & 240 & 82,081 & 128 & AdamW & same grid & 0 & BCE-with-logits (pos. weight) & 7,000 & 1,600 (8$\times$200) & PR-AUC; fixed split; 0,1,2 \\
-APS & CellV0.3 & 240 & 99,601 & 128 & AdamW & same grid & 0 & BCE-with-logits (pos. weight) & 7,000 & 1,600 (8$\times$200) & PR-AUC; fixed split; 0,1,2 \\
-APS & NeuMiss (depth 1,3,5) & 412 & 99,935 & 128 & AdamW & same grid & 0 & BCE-with-logits (pos. weight) & 7,000 & 1,600 (8$\times$200) & PR-AUC; fixed split; 0,1,2 \\
-APS & HistGradientBoosting reference & n/a & n/a & n/a & n/a & n/a & n/a & n/a & not recorded & not recorded & PR-AUC; fixed split; 0,1,2 \\
-Air Quality & plain MLP & 4,991 & 49,911 & 128 & AdamW & $10^{-3},3\!\times\!10^{-3},10^{-2}$ & 0 & MSE & 4,000 & 1,500 (30$\times$50) & $R^2$; fixed split; 0,1,2 \\
-Air Quality & confidence MLP & 2,773 & 49,915 & 128 & AdamW & same grid & 0 & MSE & 4,000 & 1,500 (30$\times$50) & $R^2$; fixed split; 0,1,2 \\
-Air Quality & same-width confidence MLP & 217 & 3,907 & 128 & AdamW & same grid & 0 & MSE & 4,000 & 1,500 (30$\times$50) & $R^2$; fixed split; 0,1,2 \\
-Air Quality & CellV0.3 & 217 & 49,911 & 128 & AdamW & same grid & 0 & MSE & 4,000 & 1,500 (30$\times$50) & $R^2$; fixed split; 0,1,2 \\
-Air Quality & NeuMiss (depth 1,3,5) & 4,993 & 50,003 & 128 & AdamW & same grid & 0 & MSE & 4,000 & 1,500 (30$\times$50) & $R^2$; fixed split; 0,1,2 \\
-Air Quality & HistGradientBoosting reference & n/a & n/a & n/a & n/a & n/a & n/a & n/a & not recorded & not recorded & $R^2$; fixed split; 0,1,2 \\
+Breast Cancer; Wine; Digits & AdamW & $10^{-2}$ & 0 & Cross-entropy & 15,000 & 1,500 (30$\times$50) & Accuracy \\
+Diabetes & AdamW & $10^{-2}$ & 0 & MSE & 15,000 & 1,500 (30$\times$50) & $R^2$ \\
+California Housing & AdamW & $10^{-2}$ & 0 & MSE & 15,000 & 1,600 (8$\times$200) & $R^2$ \\
+MNIST; Fashion-MNIST & AdamW & $10^{-2}$ & 0 & Cross-entropy & 15,000 & 1,600 (8$\times$200) & Accuracy \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
+\parbox{0.98\linewidth}{\footnotesize All clean rows use training fractions 25\% and 100\% and seeds 0, 1, and 2. Patience is shown in optimizer steps as validation checks $\times$ validation cadence. Maximum epochs were not recorded.}
+\end{table}
 
-\vspace{2pt}
-\parbox{0.98\textwidth}{\scriptsize ``Fixed split'' means the real-data harness records an official APS split or chronological Air Quality split; no training-data fraction field is present. The HGB reference is non-neural and has no hidden width, trainable-parameter count, optimizer, batch size, or neural step/patience setting. ``n/a'' means not applicable; ``not recorded'' means the frozen source contains no value.}
-\end{table*}
+% Table C3: controlled corruption / capacity benchmark
+\begin{table}[t]
+\centering
+\caption{Controlled-corruption and capacity-control model sizes.}
+\begin{tabularx}{\linewidth}{@{}p{0.25\linewidth}Xrrr@{}}
+\toprule
+Dataset & Model & Hidden width & Params & Batch \\
+\midrule
+MNIST; Fashion-MNIST & Plain MLP & 189 & 150,265 & 128 \\
+MNIST; Fashion-MNIST & Confidence MLP & 95 & 150,015 & 128 \\
+MNIST; Fashion-MNIST & Reliability-gated MLP & 189 & 150,265 & 128 \\
+MNIST; Fashion-MNIST & CellV0.3 & 157 & 149,945 & 128 \\
+Digits & Plain MLP & 330 & 24,760 & 128 \\
+Digits & Confidence MLP & 178 & 24,752 & 128 \\
+Digits & Reliability-gated MLP & 330 & 24,760 & 128 \\
+Digits & CellV0.3 & 123 & 24,733 & 128 \\
+California Housing & Plain MLP; Reliability-gated MLP & 986 & 9,861 & 128 \\
+California Housing & Confidence MLP & 548 & 9,865 & 128 \\
+California Housing & CellV0.3 & 93 & 9,859 & 128 \\
+MNIST; Fashion-MNIST & Same-width confidence MLP & 157 & 247,913 & 128 \\
+Digits & Same-width confidence MLP & 123 & 17,107 & 128 \\
+\bottomrule
+\end{tabularx}
+\parbox{0.98\linewidth}{\footnotesize Controlled-reliability rows use the 100\% training fraction, missing and Gaussian corruption families, and seeds 0, 1, and 2. They use AdamW, LR $10^{-2}$, weight decay 0, cross-entropy for classification or MSE for California Housing, a 15,000-step cap, and mean in-distribution accuracy or $R^2$ for checkpoint selection.}
+\end{table}
+
+% Table C4: real missing-data experiments
+\begin{table}[t]
+\centering
+\caption{Real missing-data experiment settings. For neural models, LR lists the shared predeclared grid; the selected value varied by seed and is recorded in the run files.}
+\begin{tabularx}{\linewidth}{@{}p{0.15\linewidth}Xrrrll@{}}
+\toprule
+Dataset & Model & Width & Params & Batch & Optimizer & LR \\
+\midrule
+APS & Plain MLP & 579 & 99,589 & 128 & AdamW & $10^{-3},\ 3\!\times\!10^{-3},\ 10^{-2}$ \\
+APS & Confidence MLP & 291 & 99,523 & 128 & AdamW & same grid \\
+APS & Same-width confidence MLP & 240 & 82,081 & 128 & AdamW & same grid \\
+APS & CellV0.3 & 240 & 99,601 & 128 & AdamW & same grid \\
+APS & NeuMiss (depths 1, 3, 5) & 412 & 99,935 & 128 & AdamW & same grid \\
+APS & HistGradientBoosting reference & n/a & n/a & n/a & n/a & n/a \\
+Air Quality & Plain MLP & 4,991 & 49,911 & 128 & AdamW & $10^{-3},\ 3\!\times\!10^{-3},\ 10^{-2}$ \\
+Air Quality & Confidence MLP & 2,773 & 49,915 & 128 & AdamW & same grid \\
+Air Quality & Same-width confidence MLP & 217 & 3,907 & 128 & AdamW & same grid \\
+Air Quality & CellV0.3 & 217 & 49,911 & 128 & AdamW & same grid \\
+Air Quality & NeuMiss (depths 1, 3, 5) & 4,993 & 50,003 & 128 & AdamW & same grid \\
+Air Quality & HistGradientBoosting reference & n/a & n/a & n/a & n/a & n/a \\
+\bottomrule
+\end{tabularx}
+\parbox{0.98\linewidth}{\footnotesize APS uses BCE-with-logits loss with the recorded positive-class weight, PR-AUC/average precision for validation checkpoint selection, a 7,000-step cap, and 1,600-step patience (8 checks every 200 steps). Air Quality uses MSE loss, $R^2$ for selection, a 4,000-step cap, and 1,500-step patience (30 checks every 50 steps). Both use seeds 0, 1, and 2 and fixed dataset splits; no training-data fraction was recorded. The HistGradientBoosting references are non-neural, so neural width, parameter count, batch, optimizer, and LR are not applicable.}
+\end{table}
 \endgroup
