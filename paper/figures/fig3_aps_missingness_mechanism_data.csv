@@ -1,0 +1,31 @@
+panel,dataset,model,bin,layer,metric,mean,std,n_seeds
+performance,aps,BVU,0,,pr_auc,0.9516697873242203,0.0015968138967173459,3
+performance,aps,BVU,"(0, 0.10]",,pr_auc,0.7884727238575479,0.036727812944411374,3
+performance,aps,BVU,"(0.10, 0.25]",,pr_auc,0.8240784556047379,0.01507370082060499,3
+performance,aps,BVU,"(0.25, 0.50]",,pr_auc,0.8913692685118597,0.007358896354462418,3
+performance,aps,BVU,>0.50,,pr_auc,0.8483333333333333,0.09569918146637055,3
+performance,aps,NeuMiss,0,,pr_auc,0.9525350659397501,0.009921546166843279,3
+performance,aps,NeuMiss,"(0, 0.10]",,pr_auc,0.794180347761336,0.007575944209366032,3
+performance,aps,NeuMiss,"(0.10, 0.25]",,pr_auc,0.8346582015993342,0.021238207788127697,3
+performance,aps,NeuMiss,"(0.25, 0.50]",,pr_auc,0.8794271924253095,0.010511252877748083,3
+performance,aps,NeuMiss,>0.50,,pr_auc,0.7020634920634921,0.01374643498070539,3
+performance,aps,Confidence MLP,0,,pr_auc,0.9729217805704006,0.006264502466212389,3
+performance,aps,Confidence MLP,"(0, 0.10]",,pr_auc,0.8067073365462626,0.007921687884073167,3
+performance,aps,Confidence MLP,"(0.10, 0.25]",,pr_auc,0.8326869083916711,0.008472131658851686,3
+performance,aps,Confidence MLP,"(0.25, 0.50]",,pr_auc,0.867159988127691,0.007838238167893346,3
+performance,aps,Confidence MLP,>0.50,,pr_auc,0.6852380952380952,0.025251568730595895,3
+performance,aps,Plain MLP,0,,pr_auc,0.954433277682424,0.01072800468013196,3
+performance,aps,Plain MLP,"(0, 0.10]",,pr_auc,0.8118978723715983,0.022482742587017063,3
+performance,aps,Plain MLP,"(0.10, 0.25]",,pr_auc,0.8241566046307086,0.026635042442083288,3
+performance,aps,Plain MLP,"(0.25, 0.50]",,pr_auc,0.8358850028585784,0.015670731614917086,3
+performance,aps,Plain MLP,>0.50,,pr_auc,0.6713492063492063,0.02570583341391905,3
+precision,aps,BVU,0,layer1,hidden_precision_pi,0.3973377492371633,0.013694023465234554,3
+precision,aps,BVU,"(0, 0.10]",layer1,hidden_precision_pi,0.8400403503463818,0.004113894669777407,3
+precision,aps,BVU,"(0.10, 0.25]",layer1,hidden_precision_pi,0.7165852974186308,0.006141529977997829,3
+precision,aps,BVU,"(0.25, 0.50]",layer1,hidden_precision_pi,0.39048130580357143,0.006308443323747968,3
+precision,aps,BVU,>0.50,layer1,hidden_precision_pi,0.20560239676611233,0.0013421290822525573,3
+precision,aps,BVU,0,layer2,hidden_precision_pi,0.3563716346406776,0.014843590153213175,3
+precision,aps,BVU,"(0, 0.10]",layer2,hidden_precision_pi,0.7595629857227648,0.018315052328163738,3
+precision,aps,BVU,"(0.10, 0.25]",layer2,hidden_precision_pi,0.6488784692994762,0.01583536214175785,3
+precision,aps,BVU,"(0.25, 0.50]",layer2,hidden_precision_pi,0.3606710661300505,0.010170731368078455,3
+precision,aps,BVU,>0.50,layer2,hidden_precision_pi,0.19369057103207238,0.001831605078862649,3

@@ -1,0 +1,89 @@
+panel,dataset,corruption_family,model,severity,mean,std,n_seeds
+MNIST -- missing features,mnist,missing,BVU,0.0,0.9803000000000001,0.0007211102550927184,3
+MNIST -- missing features,mnist,missing,BVU,0.1,0.9779111111111112,0.0009754391223860991,3
+MNIST -- missing features,mnist,missing,BVU,0.3,0.9699777777777778,0.0012370813919748522,3
+MNIST -- missing features,mnist,missing,BVU,0.5,0.9483444444444445,0.0024409318196435097,3
+MNIST -- missing features,mnist,missing,BVU,0.7,0.8610222222222222,0.005097312291060071,3
+MNIST -- missing features,mnist,missing,Plain MLP,0.0,0.9652666666666666,0.002400694344004065,3
+MNIST -- missing features,mnist,missing,Plain MLP,0.1,0.9621999999999999,0.002914332399252558,3
+MNIST -- missing features,mnist,missing,Plain MLP,0.3,0.9504333333333334,0.0013503086067019018,3
+MNIST -- missing features,mnist,missing,Plain MLP,0.5,0.9220333333333334,0.00020816659994659034,3
+MNIST -- missing features,mnist,missing,Plain MLP,0.7,0.8344,0.0022258581366395697,3
+MNIST -- missing features,mnist,missing,Confidence MLP,0.0,0.9492333333333334,0.004931869152089649,3
+MNIST -- missing features,mnist,missing,Confidence MLP,0.1,0.9448444444444445,0.005296155139274056,3
+MNIST -- missing features,mnist,missing,Confidence MLP,0.3,0.9303888888888889,0.006097570858167186,3
+MNIST -- missing features,mnist,missing,Confidence MLP,0.5,0.8975111111111111,0.006822946034711989,3
+MNIST -- missing features,mnist,missing,Confidence MLP,0.7,0.8037888888888889,0.01090027182807508,3
+MNIST -- missing features,mnist,missing,Same-width Confidence MLP,0.0,0.9516666666666667,0.004437717130838051,3
+MNIST -- missing features,mnist,missing,Same-width Confidence MLP,0.1,0.9475111111111111,0.004999148075570555,3
+MNIST -- missing features,mnist,missing,Same-width Confidence MLP,0.3,0.9334444444444444,0.004986240326397556,3
+MNIST -- missing features,mnist,missing,Same-width Confidence MLP,0.5,0.9011,0.0031085902485424597,3
+MNIST -- missing features,mnist,missing,Same-width Confidence MLP,0.7,0.8146888888888889,0.003060561555831931,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,BVU,0.0,0.978,0.0023515952032610032,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,BVU,0.25,0.9778111111111111,0.0017733625728584186,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,BVU,0.5,0.9769333333333333,0.0019052558883257474,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,BVU,0.75,0.9750888888888889,0.001899220112845561,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,BVU,1.0,0.9717111111111111,0.0026051942417096696,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,BVU,1.5,0.9621666666666667,0.002649108864840673,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Plain MLP,0.0,0.9643,0.002128379665379261,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Plain MLP,0.25,0.9638111111111112,0.0018470196213037889,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Plain MLP,0.5,0.9615666666666667,0.0019359178127641929,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Plain MLP,0.75,0.9575555555555556,0.0024281527805980513,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Plain MLP,1.0,0.9516777777777777,0.0025434738566101085,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Plain MLP,1.5,0.930711111111111,0.005227526856653805,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Confidence MLP,0.0,0.9367666666666667,0.007189807600578333,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Confidence MLP,0.25,0.9358222222222222,0.007622505663664193,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Confidence MLP,0.5,0.9329555555555555,0.00715738416938402,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Confidence MLP,0.75,0.9279888888888889,0.0067812104240183345,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Confidence MLP,1.0,0.9201888888888888,0.0070813003618554315,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Confidence MLP,1.5,0.8917444444444445,0.009782883767827093,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Same-width Confidence MLP,0.0,0.9445666666666668,0.0059340823497263705,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Same-width Confidence MLP,0.25,0.9436888888888889,0.005409593672698779,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Same-width Confidence MLP,0.5,0.9408000000000001,0.006422443287237174,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Same-width Confidence MLP,0.75,0.9371333333333333,0.0071842420152256345,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Same-width Confidence MLP,1.0,0.9303,0.00798964607754597,3
+MNIST -- heterogeneous Gaussian noise,mnist,gaussian,Same-width Confidence MLP,1.5,0.9091222222222223,0.011724349464698315,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,BVU,0.0,0.8831666666666668,0.008409716602438728,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,BVU,0.1,0.8782888888888889,0.006862970958001377,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,BVU,0.3,0.8635888888888889,0.004926722297084777,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,BVU,0.5,0.8375777777777778,9.622504486492703e-05,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,BVU,0.7,0.7678666666666666,0.013014991356124696,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Plain MLP,0.0,0.8550000000000001,0.002088061301782082,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Plain MLP,0.1,0.8510666666666666,0.0015191371820140593,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Plain MLP,0.3,0.8369333333333333,0.0021361959960015066,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Plain MLP,0.5,0.811288888888889,0.004818290768096728,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Plain MLP,0.7,0.7409777777777778,0.007711487342726938,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Confidence MLP,0.0,0.8427333333333333,0.005348208422764995,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Confidence MLP,0.1,0.8381555555555555,0.006218371824533209,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Confidence MLP,0.3,0.8252333333333333,0.004920817456931688,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Confidence MLP,0.5,0.8015222222222222,0.004006845993398628,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Confidence MLP,0.7,0.7437222222222223,0.00760360538263361,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Same-width Confidence MLP,0.0,0.8484666666666667,0.0029670411748632273,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Same-width Confidence MLP,0.1,0.8439666666666666,0.002405780076768771,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Same-width Confidence MLP,0.3,0.8318777777777777,0.0016641091488419164,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Same-width Confidence MLP,0.5,0.8084888888888889,0.0014614807306036653,3
+Fashion-MNIST -- missing features,fashion_mnist,missing,Same-width Confidence MLP,0.7,0.7488444444444444,0.009602680952811155,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,BVU,0.0,0.8842666666666666,0.0003785938897200401,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,BVU,0.25,0.882611111111111,0.0007002645002927554,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,BVU,0.5,0.8784111111111111,0.0005872093449655557,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,BVU,0.75,0.8722777777777778,0.0008302163930320899,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,BVU,1.0,0.8647,0.0005567764362830405,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,BVU,1.5,0.8470888888888889,0.0005928587365313259,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Plain MLP,0.0,0.8565,0.003508560958569719,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Plain MLP,0.25,0.8548333333333333,0.003178574103797747,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Plain MLP,0.5,0.8508888888888889,0.0037008007141598703,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Plain MLP,0.75,0.8435999999999999,0.00254972765430175,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Plain MLP,1.0,0.834211111111111,0.001612910872144371,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Plain MLP,1.5,0.8060111111111111,0.0007259731655075044,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Confidence MLP,0.0,0.8426333333333333,0.002676440422152728,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Confidence MLP,0.25,0.8411444444444445,0.0030113366049228122,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Confidence MLP,0.5,0.8363666666666667,0.0031895663237081705,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Confidence MLP,0.75,0.8309,0.005350077881053093,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Confidence MLP,1.0,0.8219555555555556,0.006300029394405237,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Confidence MLP,1.5,0.7949666666666667,0.00958581127384528,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Same-width Confidence MLP,0.0,0.8459333333333334,0.003139001964531649,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Same-width Confidence MLP,0.25,0.8456333333333333,0.003178574103797704,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Same-width Confidence MLP,0.5,0.8439222222222222,0.0015784427393736133,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Same-width Confidence MLP,0.75,0.8385111111111111,0.0021103799903580424,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Same-width Confidence MLP,1.0,0.8308444444444444,0.0026395145457142406,3
+Fashion-MNIST -- heterogeneous Gaussian noise,fashion_mnist,gaussian,Same-width Confidence MLP,1.5,0.8054777777777777,0.007421764789630085,3
