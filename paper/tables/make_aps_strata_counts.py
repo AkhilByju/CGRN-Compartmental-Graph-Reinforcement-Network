@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""Paper A -- appendix table: APS test-set counts per missingness stratum.
+
+Counts examples / positives / negatives in each of the five frozen Figure-3
+missingness bins (`MISSINGNESS_BINS`) on the frozen official 16,000-row APS
+test set, and verifies that bin membership is identical across seeds and
+matches the per-stratum `n` / `n_pos` stored in the frozen run records.
+
+Read-only: nothing is trained or evaluated, no run record or model is written,
+and the raw APS files are read from the local cache (never downloaded here).
+Writes only `aps_strata_counts.tex` next to this script.
+
+Usage:
+    python paper/tables/make_aps_strata_counts.py
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+_REPO_ROOT = _HERE.parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+
+from experiments.paper_a.real_reliability import datasets as RD  # noqa: E402
+
+RECORDS = (
+    _REPO_ROOT / "experiments" / "paper_a" / "real_reliability" / "results"
+    / "processed" / "real_reliability_runs.json"
+)
+SEEDS = (0, 1, 2)
+N_FEATURES = RD._APS_FEATURE_COUNT
+TEST_CSV = RD._CACHE / "aps_failure_test_set.csv"
+
+BIN_TEX = {
+    "0": "$0$",
+    "(0, 0.10]": "$(0,\\,0.10]$",
+    "(0.10, 0.25]": "$(0.10,\\,0.25]$",
+    "(0.25, 0.50]": "$(0.25,\\,0.50]$",
+    ">0.50": "$>0.50$",
+}
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _exact_bin_from_count(k: np.ndarray) -> np.ndarray:
+    """Bin index from the integer number of missing features, using exact
+    integer thresholds (0.10*170 = 17, 0.25*170 = 42.5, 0.50*170 = 85) -- an
+    independent check on the float32 comparisons in `missingness_bin_index`."""
+    idx = np.full(k.shape, 4, dtype=np.int64)
+    idx[k <= 85] = 3
+    idx[k <= 42] = 2
+    idx[k <= 17] = 1
+    idx[k == 0] = 0
+    return idx
+
+
+def count_test_split() -> dict:
+    if not TEST_CSV.exists():
+        raise SystemExit(f"missing cached APS test file: {TEST_CSV} (not downloading)")
+    _train, test_df = RD._aps_frames()
+    feats = [c for c in test_df.columns if c != "class"]
+    assert len(feats) == N_FEATURES and len(test_df) == 16_000
+
+    miss = test_df[feats].isna().to_numpy()
+    y = test_df["class"].to_numpy().astype(np.int64)
+    frac = torch.tensor(np.ascontiguousarray(miss.mean(axis=1)), dtype=torch.float32)
+    bins = RD.missingness_bin_index(frac).numpy()
+    assert (bins >= 0).all(), "an example fell outside every bin"
+
+    exact = _exact_bin_from_count(miss.sum(axis=1))
+    assert (bins == exact).all(), "float32 binning disagrees with exact integer binning"
+
+    rows = []
+    for i, (label, _lo, _hi) in enumerate(RD.MISSINGNESS_BINS):
+        m = bins == i
+        n, pos = int(m.sum()), int(y[m].sum())
+        rows.append({"bin": label, "n": n, "pos": pos, "neg": n - pos,
+                     "pos_frac": pos / n if n else float("nan")})
+    assert sum(r["n"] for r in rows) == len(y)
+    return {"rows": rows, "bins": bins, "y": y, "n_total": len(y), "pos_total": int(y.sum())}
+
+
+def verify_seeds(ref_bins: np.ndarray, ref_y: np.ndarray) -> dict:
+    """Bin membership and labels as produced by the actual evaluation pipeline
+    (`prepare_dataset` -> `missing_frac_test` -> `missingness_bin_index`) for
+    every seed. `prepare_dataset` builds tensors only; no model is touched."""
+    out = {}
+    for seed in SEEDS:
+        p = RD.prepare_dataset("aps", seed)
+        b = RD.missingness_bin_index(p.missing_frac_test).numpy()
+        out[seed] = {
+            "bins_equal_to_raw_count": bool(np.array_equal(b, ref_bins)),
+            "labels_equal_to_raw_test": bool(np.array_equal(p.y_test.numpy(), ref_y)),
+            "n_test": int(b.size),
+            "bin_sha256": hashlib.sha256(b.astype(np.int8).tobytes()).hexdigest(),
+        }
+    return out
+
+
+def verify_records(rows: list[dict]) -> dict:
+    """Recorded per-stratum n / n_pos in every frozen APS run record (all
+    seeds, all models that store `by_stratum`) against the recomputed counts."""
+    want = {r["bin"]: (r["n"], r["pos"]) for r in rows}
+    recs = [r for r in json.loads(RECORDS.read_text()) if r["dataset"] == "aps"]
+    checked, mismatches = 0, []
+    for r in recs:
+        strata = (r.get("evaluation") or {}).get("by_stratum") or []
+        if not strata:
+            continue
+        got = {s["bin"]: (s["n"], s["n_pos"]) for s in strata}
+        checked += 1
+        if got != want:
+            mismatches.append((r["family"], r["seed"]))
+    return {"records_checked": checked, "records_total": len(recs), "mismatches": mismatches}
+
+
+def _int(x: int) -> str:
+    return f"{x:,}".replace(",", "{,}")
+
+
+def render_tex(rows: list[dict], n_total: int, pos_total: int) -> str:
+    lines = [
+        "% APS test-set counts per Figure-3 missingness bin, generated by "
+        "make_aps_strata_counts.py.",
+        "% Requires \\usepackage{float} for the [H] placement.",
+        "% Import with: \\input{tables/aps_strata_counts}",
+        "\\begin{table}[H]",
+        "\\centering",
+        "\\small",
+        "\\caption{Composition of the APS Failure at Scania Trucks test set "
+        "(official 16{,}000-example test split) by the fraction of the 170 input "
+        "features that are missing, using the five strata of Figure~3. "
+        "Bins are upper-inclusive and contain identical examples for every seed.}",
+        "\\label{tab:aps_strata_counts}",
+        "\\begin{tabular}{@{}lrrrr@{}}",
+        "\\toprule",
+        "Missing fraction & Test examples & Positive & Negative & Positive fraction \\\\",
+        "\\midrule",
+    ]
+    for r in rows:
+        lines.append(
+            f"{BIN_TEX[r['bin']]} & {_int(r['n'])} & {_int(r['pos'])} & {_int(r['neg'])} & "
+            f"{r['pos_frac']:.3f} \\\\"
+        )
+    lines += [
+        "\\midrule",
+        f"All & {_int(n_total)} & {_int(pos_total)} & {_int(n_total - pos_total)} & "
+        f"{pos_total / n_total:.3f} \\\\",
+        "\\bottomrule",
+        "\\end{tabular}",
+        "\\end{table}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def main() -> None:
+    res = count_test_split()
+    seeds = verify_seeds(res["bins"], res["y"])
+    recs = verify_records(res["rows"])
+
+    print(f"test file: {TEST_CSV}\nsha256:    {_sha256(TEST_CSV)}")
+    for r in res["rows"]:
+        print(f"{r['bin']:>14}  n={r['n']:>6}  pos={r['pos']:>4}  neg={r['neg']:>6}  "
+              f"pos_frac={r['pos_frac']:.4f}")
+    print(f"{'ALL':>14}  n={res['n_total']:>6}  pos={res['pos_total']:>4}  "
+          f"neg={res['n_total'] - res['pos_total']:>6}  "
+          f"pos_frac={res['pos_total'] / res['n_total']:.4f}")
+    for s, v in seeds.items():
+        print(f"seed {s}: {v}")
+    print(f"run-record cross-check: {recs}")
+
+    ok = (
+        all(v["bins_equal_to_raw_count"] and v["labels_equal_to_raw_test"] for v in seeds.values())
+        and len({v["bin_sha256"] for v in seeds.values()}) == 1
+        and not recs["mismatches"] and recs["records_checked"] > 0
+    )
+    print(f"IDENTICAL ACROSS SEEDS AND RECORDS: {ok}")
+    if not ok:
+        raise SystemExit("verification failed; table not written")
+
+    (_HERE / "aps_strata_counts.tex").write_text(
+        render_tex(res["rows"], res["n_total"], res["pos_total"])
+    )
+    print(f"wrote {_HERE / 'aps_strata_counts.tex'}")
+
+
+if __name__ == "__main__":
+    main()
